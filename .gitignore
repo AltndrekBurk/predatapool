@@ -54,3 +54,6 @@ test-ledger/
 
 # server build
 /server/dist/
+
+# node_modules (all locations)
+node_modules/
