@@ -1,0 +1,24 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+datapool = "62pKxmwZxC7SA4TSYW7FYAxewRU6UXKT2bh7xC55Kg4D"
+
+[programs.devnet]
+datapool = "62pKxmwZxC7SA4TSYW7FYAxewRU6UXKT2bh7xC55Kg4D"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[workspace]
+members = ["programs/datapool"]
+
+[hooks]
