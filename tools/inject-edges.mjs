@@ -26,17 +26,31 @@ const DB_PATH = join(ROOT, ".code-review-graph/graph.db");
 const EDGES_PATH = join(ROOT, "anchor_edges.json");
 
 // Edge kinds we own — delete these before reinserting so re-runs are idempotent
-const OWN_KINDS = ["ANCHOR_RPC", "ANCHOR_KIT", "HTTP_CALL", "ROUTE_CALL"];
+const OWN_KINDS = [
+  "ANCHOR_RPC", "ANCHOR_RPC_LEGACY", "ANCHOR_DYNAMIC", "ANCHOR_KIT",
+  "HTTP_CALL", "SWR_CALL", "SOLANA_RPC", "SOLANA_SUBSCRIBE",
+  "ROUTE_CALL", "RUST_CPI",
+];
 
 // These edge types also get a CALLS alias so callers_of / callees_of traversal works
-const ALSO_EMIT_CALLS = new Set(["ANCHOR_RPC", "ANCHOR_KIT", "HTTP_CALL", "ROUTE_CALL"]);
+const ALSO_EMIT_CALLS = new Set([
+  "ANCHOR_RPC", "ANCHOR_RPC_LEGACY", "ANCHOR_DYNAMIC", "ANCHOR_KIT",
+  "HTTP_CALL", "SWR_CALL", "SOLANA_RPC", "SOLANA_SUBSCRIBE",
+  "ROUTE_CALL", "RUST_CPI",
+]);
 
 // Map analyzer edge types → DB edge kind strings
 const KIND_MAP = {
-  anchor_rpc: "ANCHOR_RPC",
-  anchor_kit: "ANCHOR_KIT",
-  http_call: "HTTP_CALL",
-  route_call: "ROUTE_CALL",
+  anchor_rpc:        "ANCHOR_RPC",
+  anchor_rpc_legacy: "ANCHOR_RPC_LEGACY",
+  anchor_dynamic:    "ANCHOR_DYNAMIC",
+  anchor_kit:        "ANCHOR_KIT",
+  http_call:         "HTTP_CALL",
+  swr_call:          "SWR_CALL",
+  solana_rpc:        "SOLANA_RPC",
+  solana_subscribe:  "SOLANA_SUBSCRIBE",
+  route_call:        "ROUTE_CALL",
+  rust_cpi:          "RUST_CPI",
 };
 
 function abs(relPath) {
@@ -146,10 +160,9 @@ function run() {
   const syntheticCount = db.prepare(`SELECT COUNT(*) as n FROM nodes WHERE extra LIKE '%"synthetic":true%'`).get().n;
 
   console.log("\n✅  Injection complete!");
-  console.log(`   ANCHOR_RPC      : ${stats.ANCHOR_RPC} edges`);
-  console.log(`   ANCHOR_KIT      : ${stats.ANCHOR_KIT} edges`);
-  console.log(`   HTTP_CALL       : ${stats.HTTP_CALL} edges`);
-  console.log(`   ROUTE_CALL      : ${stats.ROUTE_CALL} edges`);
+  for (const kind of OWN_KINDS) {
+    if (stats[kind] > 0) console.log(`   ${kind.padEnd(20)}: ${stats[kind]} edges`);
+  }
   console.log(`   ────────────────────────`);
   console.log(`   Total edges     : ${inserted}`);
   console.log(`   Synthetic nodes : ${syntheticCount}`);
