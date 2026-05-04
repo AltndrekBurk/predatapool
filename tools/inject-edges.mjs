@@ -78,10 +78,27 @@ function run() {
     console.log(`   Removed ${callsRemoved.changes} stale CALLS(cross-runtime) edges`);
   }
 
-  // ── Collect all existing node qualified_names for validation ──
+  // ── Delete synthetic nodes we previously inserted ──
+  db.prepare(`DELETE FROM nodes WHERE extra LIKE '%"synthetic":true%'`).run();
+
+  // ── Collect all existing node qualified_names ──
   const knownNodes = new Set(
     db.prepare("SELECT qualified_name FROM nodes").all().map((r) => r.qualified_name)
   );
+
+  // ── Insert synthetic nodes for missing source/target qualified names ──
+  const insertNode = db.prepare(`
+    INSERT INTO nodes (kind, name, qualified_name, file_path, line_start, line_end, language, is_test, extra, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'typescript', 0, '{"synthetic":true}', ?)
+  `);
+
+  function ensureNode(qualifiedName, lineHint) {
+    if (knownNodes.has(qualifiedName)) return;
+    const filePart = qualifiedName.split("::")[0];
+    const namePart = qualifiedName.split("::").slice(1).join("::");
+    insertNode.run("Function", namePart || filePart, qualifiedName, filePart, lineHint ?? 0, lineHint ?? 0, now);
+    knownNodes.add(qualifiedName);
+  }
 
   // ── Insert new edges ──
   const insert = db.prepare(`
@@ -90,9 +107,7 @@ function run() {
   `);
 
   let inserted = 0;
-  let skipped = 0;
   const stats = Object.fromEntries(OWN_KINDS.map((k) => [k, 0]));
-  const missing = [];
 
   for (const edge of edgesData.edges) {
     const kind = KIND_MAP[edge.type];
@@ -102,13 +117,9 @@ function run() {
     const targetQN = abs(edge.to);
     const filePath = abs(edge.from.split("::")[0]);
 
-    // Warn if source node doesn't exist (graph may not have parsed it yet)
-    if (!knownNodes.has(sourceQN)) {
-      missing.push({ role: "source", qn: sourceQN });
-    }
-    if (!knownNodes.has(targetQN)) {
-      missing.push({ role: "target", qn: targetQN });
-    }
+    // Ensure both endpoints exist as nodes (create synthetic if missing)
+    ensureNode(sourceQN, edge.line);
+    ensureNode(targetQN, edge.line);
 
     const extra = JSON.stringify({
       via: edge.via,
@@ -125,40 +136,23 @@ function run() {
     inserted++;
     stats[kind]++;
 
-    // Also insert as CALLS so callers_of/callees_of traversal picks it up.
-    // If source node is missing (e.g. ::module for anonymous callbacks), fall back to the file node.
-    if (ALSO_EMIT_CALLS.has(kind) && knownNodes.has(targetQN)) {
-      let callsSrc = sourceQN;
-      if (!knownNodes.has(callsSrc)) {
-        // Fallback: use the file node (strip ::qualifier)
-        callsSrc = callsSrc.split("::")[0];
-      }
-      if (knownNodes.has(callsSrc)) {
-        insert.run("CALLS", callsSrc, targetQN, filePath, edge.line ?? 0, extra, confidence, now);
-        inserted++;
-      }
+    // Also emit as CALLS so callers_of/callees_of traversal works
+    if (ALSO_EMIT_CALLS.has(kind)) {
+      insert.run("CALLS", sourceQN, targetQN, filePath, edge.line ?? 0, extra, confidence, now);
+      inserted++;
     }
   }
+
+  const syntheticCount = db.prepare(`SELECT COUNT(*) as n FROM nodes WHERE extra LIKE '%"synthetic":true%'`).get().n;
 
   console.log("\n✅  Injection complete!");
-  console.log(`   ANCHOR_RPC  : ${stats.ANCHOR_RPC} edges`);
-  console.log(`   ANCHOR_KIT  : ${stats.ANCHOR_KIT} edges`);
-  console.log(`   HTTP_CALL   : ${stats.HTTP_CALL} edges`);
-  console.log(`   ROUTE_CALL  : ${stats.ROUTE_CALL} edges`);
-  console.log(`   ─────────────────────`);
-  console.log(`   Total inserted : ${inserted}`);
-
-  if (missing.length > 0) {
-    const uniqueMissing = [...new Map(missing.map((m) => [m.qn, m])).values()];
-    console.log(`\n⚠️   ${uniqueMissing.length} node(s) not yet in graph (edges still written):`);
-    for (const m of uniqueMissing.slice(0, 10)) {
-      console.log(`   [${m.role}] ${m.qn}`);
-    }
-    if (uniqueMissing.length > 10) {
-      console.log(`   ... and ${uniqueMissing.length - 10} more`);
-    }
-    console.log(`   → These will resolve after next 'anchor build' + graph rebuild`);
-  }
+  console.log(`   ANCHOR_RPC      : ${stats.ANCHOR_RPC} edges`);
+  console.log(`   ANCHOR_KIT      : ${stats.ANCHOR_KIT} edges`);
+  console.log(`   HTTP_CALL       : ${stats.HTTP_CALL} edges`);
+  console.log(`   ROUTE_CALL      : ${stats.ROUTE_CALL} edges`);
+  console.log(`   ────────────────────────`);
+  console.log(`   Total edges     : ${inserted}`);
+  console.log(`   Synthetic nodes : ${syntheticCount}`);
 
   db.close();
 

@@ -148,23 +148,43 @@ const FN_PATTERNS = [
   /(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(/,
   /(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?function/,
   /(?:export\s+)?const\s+(\w+)\s*:\s*\w[^=]*=\s*(?:async\s+)?\(/,
+  // React hooks: const handleX = useCallback(async () => {
+  /(?:export\s+)?const\s+(\w+)\s*=\s*use\w+\s*\(\s*(?:async\s+)?\(/,
 ];
 
-// Variables that look like function context matches but are NOT functions
-// Variable names and tiny helpers that look like functions but aren't meaningful callers
 const SKIP_NAMES = new Set([
   "body", "result", "data", "response", "res", "req", "err", "error",
-  "send", "readBody",  // server helpers defined above the route handler
+  "send", "readBody", "server",
 ]);
 
+// HTTP route if-block pattern: if (req.method === "X" && url.pathname === "/y")
+const ROUTE_IF = /req\.method\s*===\s*["'](\w+)["'].*url\.pathname\s*(?:===\s*["']([^"']+)["']|\.startsWith\s*\(["']([^"']+)["']\))/;
+
+/**
+ * Walk backwards from lineIdx to find the enclosing named function.
+ * For anonymous HTTP route handlers (http.createServer callback), detect
+ * the nearest route if-block and return a synthetic name like
+ * `filePath::http_handler_POST_request`.
+ */
 function getCallerContext(lines, lineIdx, filePath) {
+  // First pass: look for a route if-block between here and the createServer call
+  for (let i = lineIdx; i >= 0; i--) {
+    const rm = lines[i].match(ROUTE_IF);
+    if (rm) {
+      const method = rm[1];
+      const pattern = rm[2] ?? rm[3] ?? "unknown";
+      return routeHandlerName(filePath, method, pattern);
+    }
+    if (/createServer/.test(lines[i])) break;
+  }
+
+  // Second pass: standard named function walk
   for (let i = lineIdx; i >= 0; i--) {
     for (const pat of FN_PATTERNS) {
       const m = lines[i].match(pat);
       if (m && !SKIP_NAMES.has(m[1])) return `${filePath}::${m[1]}`;
     }
-    // IIFE pattern: (async () => { — attribute to nearest named function above
-    if (/\(async\s*\(\)\s*=>/.test(lines[i])) continue; // skip, keep walking up
+    if (/\(async\s*\(\)\s*=>/.test(lines[i])) continue;
   }
   return `${filePath}::module`;
 }
@@ -238,6 +258,12 @@ function extractServerRoutes(serverFiles) {
 // ─────────────────────────────────────────────
 // HTTP fetch() matcher
 // ─────────────────────────────────────────────
+
+/** Canonical route handler node name — used by both HTTP_CALL targets and ROUTE_CALL sources */
+function routeHandlerName(filePath, method, pattern) {
+  const slug = pattern.replace(/\//g, "_").replace(/^_/, "").replace(/:/g, "") || "root";
+  return `${filePath}::http_handler_${method.toUpperCase()}_${slug}`;
+}
 
 /** Extract the URL path from a fetch() call line */
 function extractFetchUrlPath(line) {
@@ -361,7 +387,8 @@ function analyze() {
       }
 
       // ── Anchor Kit: get<Name>Instruction[Async](...) ──
-      const kitMatch = line.match(/\bget([A-Z]\w+?)InstructionAsync?\s*\(/);
+      // Note: (?:Async)? makes the whole word optional; Async? would only make 'c' optional
+      const kitMatch = line.match(/\bget([A-Z]\w+?)Instruction(?:Async)?\s*\(/);
       if (kitMatch) {
         const pascalName = kitMatch[1];
         const ix = instructions.find((x) => x.PascalCase === pascalName);
@@ -397,8 +424,8 @@ function analyze() {
             from: caller,
             via: `fetch(${method} /${urlInfo.path})`,
             to: route
-              ? `${route.file}::route(${method} ${route.pattern})`
-              : `server::${method} /${urlInfo.path}`,
+              ? routeHandlerName(route.file, method, route.pattern)
+              : `server::${method}_${urlInfo.path.replace(/\//g, "_")}`,
             line: i + 1,
             confidence: route ? "high" : "low",
           });
