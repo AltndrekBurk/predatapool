@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "code-review-graph update --skip-flows && cd /home/burak/datapool-protocol && node tools/anchor-graph-analyzer.mjs 2>/dev/null && node tools/inject-edges.mjs 2>/dev/null",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "code-review-graph status && cd /home/burak/datapool-protocol && node tools/inject-edges.mjs 2>/dev/null",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
