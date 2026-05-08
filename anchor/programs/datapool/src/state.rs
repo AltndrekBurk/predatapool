@@ -67,11 +67,22 @@ pub struct DataPool {
     /// Cumulative USDC paid to provider so far (for incremental claim accounting).
     pub provider_paid: u64,
 
+    /// Where to fetch the raw payload bytes — IPFS CID or HTTP(S) URL.
+    /// Buyers pull the bytes, hash locally with SHA-256, and compare with
+    /// `data_hash` before signing a settle receipt. Capped at 128 chars so a
+    /// CIDv1 (~62) or a short HTTPS URL fits with margin.
+    #[max_len(128)]
+    pub storage_uri: String,
+
     /// Bump for PDA derivation
     pub bump: u8,
 }
 
 impl DataPool {
+    /// Hard cap matching the `#[max_len]` on `storage_uri`. Kept in sync by
+    /// hand — tests assert equality against the field's serialization.
+    pub const STORAGE_URI_MAX_LEN: usize = 128;
+
     /// Calculate current price based on time elapsed since fetch.
     /// Returns base_price_usdc if not yet fetched (pre-fetch = full price).
     pub fn current_price(&self, now: i64) -> u64 {

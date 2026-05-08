@@ -18,6 +18,10 @@ import {
 } from "@solana/web3.js";
 import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { AnchorProvider, Program, BN, web3 } from "@coral-xyz/anchor";
+import {
+  createKeyPairSignerFromBytes,
+  type KeyPairSigner,
+} from "@solana/kit";
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
 import type { PendingReceipt } from "./batch.js";
@@ -39,6 +43,29 @@ function loadKeeper(): Keypair {
     process.env.KEEPER_KEYPAIR_PATH ?? `${process.env.HOME}/.config/solana/id.json`;
   const raw = JSON.parse(readFileSync(keypairPath, "utf-8"));
   return Keypair.fromSecretKey(new Uint8Array(raw));
+}
+
+/**
+ * The keeper's wallet exposed as a `@solana/kit` `KeyPairSigner` — required
+ * by `@solana/mpp/client`'s `solana.charge({ signer })` for x402 payments.
+ *
+ * Same underlying bytes as `loadKeeper()`, just wrapped for the kit API.
+ * `createKeyPairSignerFromBytes` accepts the 64-byte secret-key form that
+ * `@solana/web3.js` uses, so we reuse the same `id.json` file.
+ */
+export async function loadKeeperKitSigner(): Promise<KeyPairSigner> {
+  const keypairPath =
+    process.env.KEEPER_KEYPAIR_PATH ?? `${process.env.HOME}/.config/solana/id.json`;
+  const raw = JSON.parse(readFileSync(keypairPath, "utf-8"));
+  return createKeyPairSignerFromBytes(new Uint8Array(raw));
+}
+
+/**
+ * RPC URL the keeper uses for both program calls and MPP client payments.
+ * Re-exported so the fetcher can pass the same endpoint to `solana.charge`.
+ */
+export function getKeeperRpcUrl(): string {
+  return RPC_URL;
 }
 
 function getProgram() {

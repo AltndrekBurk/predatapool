@@ -74,7 +74,7 @@ export function PoolList({ refreshKey }: Props) {
             .sort((a: Pool, b: Pool) => b.createdAt - a.createdAt)
             .map((pool: Pool) => (
               <PoolCard
-                key={pool.requestHash}
+                key={pool.requestHashHex}
                 pool={pool}
                 onJoined={() => mutate()}
               />

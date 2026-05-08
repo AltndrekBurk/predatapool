@@ -38,4 +38,6 @@ pub enum DataPoolError {
     EdVerifyMismatch,
     #[msg("Receipt domain prefix incorrect — wrong protocol or version")]
     ReceiptBadDomain,
+    #[msg("Storage URI exceeds the on-chain length cap")]
+    StorageUriTooLong,
 }

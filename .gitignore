@@ -68,3 +68,9 @@ node_modules/
 
 # Server runtime logs
 server/*.log
+
+# datapool runtime cache (SQLite + WAL/SHM)
+server/cache/
+*.db
+*.db-wal
+*.db-shm

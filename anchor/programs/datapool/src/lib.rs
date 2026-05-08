@@ -72,6 +72,7 @@ pub mod datapool {
         pool.provider_share_bps = provider_share_bps;
         pool.provider_decay_bps_per_hour = provider_decay_bps_per_hour;
         pool.provider_paid = 0;
+        pool.storage_uri = String::new();
         pool.bump = ctx.bumps.pool;
 
         msg!(
@@ -102,9 +103,9 @@ pub mod datapool {
     pub fn register_dataset(
         ctx: Context<RegisterDataset>,
         request_hash: [u8; 32],
-        storage_ref: String,
+        storage_uri: String,
     ) -> Result<()> {
-        instructions::handle_register_dataset(ctx, request_hash, storage_ref)
+        instructions::handle_register_dataset(ctx, request_hash, storage_uri)
     }
 
     /// Early sponsor claims retroactive rebate from post-fetch buyer revenue.

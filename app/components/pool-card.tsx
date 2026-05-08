@@ -153,7 +153,7 @@ export function PoolCard({ pool, onJoined }: Props) {
           <div className="flex items-center gap-2 mb-1">
             <StatusDot status={pool.status} />
             <span className="font-mono text-xs text-muted truncate">
-              {pool.requestHash.slice(0, 8)}...{pool.requestHash.slice(-6)}
+              {pool.requestHashHex.slice(0, 8)}...{pool.requestHashHex.slice(-6)}
             </span>
           </div>
           <p className="text-sm font-medium truncate" title={pool.endpoint}>
@@ -273,7 +273,7 @@ export function PoolCard({ pool, onJoined }: Props) {
         )}
 
         <a
-          href={getExplorerUrl(`/address/${pool.requestHash}`)}
+          href={getExplorerUrl(`/address/${pool.requestHashHex}`)}
           target="_blank"
           rel="noopener noreferrer"
           className="rounded-lg border border-border-low bg-card px-3 py-2 text-xs font-medium text-muted transition hover:bg-cream hover:text-foreground"

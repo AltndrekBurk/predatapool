@@ -3,8 +3,10 @@ use anchor_lang::prelude::*;
 use crate::error::DataPoolError;
 use crate::state::DataPool;
 
-/// Called by the keeper after fetching to make the pool open for
-/// post-fetch buyers (time-decay pricing begins now).
+/// Called by the keeper after fetching to make the pool open for post-fetch
+/// buyers (time-decay pricing begins now) AND to publish the storage URI
+/// where the raw payload can be pulled. Buyers verify SHA-256 of the
+/// fetched bytes against `data_hash` before signing a settle receipt.
 #[derive(Accounts)]
 #[instruction(request_hash: [u8; 32])]
 pub struct RegisterDataset<'info> {
@@ -23,18 +25,26 @@ pub struct RegisterDataset<'info> {
 pub fn handle_register_dataset(
     ctx: Context<RegisterDataset>,
     _request_hash: [u8; 32],
-    // IPFS CID or off-chain storage reference (logged, not stored on-chain to save space)
-    storage_ref: String,
+    storage_uri: String,
 ) -> Result<()> {
+    require!(
+        storage_uri.len() <= DataPool::STORAGE_URI_MAX_LEN,
+        DataPoolError::StorageUriTooLong
+    );
+
     let pool = &mut ctx.accounts.pool;
 
-    // Re-open pool for post-fetch buyers at decayed price
+    // Persist the storage URI on-chain so any client can resolve where the
+    // payload lives without trusting the keeper's HTTP API.
+    pool.storage_uri = storage_uri;
+
+    // Re-open pool for post-fetch buyers at decayed price.
     pool.is_open = true;
 
     msg!(
-        "Dataset registered for pool {}. Storage ref: {}. Decay starts from {}.",
+        "Dataset registered for pool {}. storage_uri: {}. fetched_at: {}.",
         pool.key(),
-        storage_ref,
+        pool.storage_uri,
         pool.fetched_at
     );
 
