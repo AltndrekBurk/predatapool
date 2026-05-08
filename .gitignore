@@ -62,3 +62,9 @@ anchor_edges.json
 node_modules/
 # Added by code-review-graph
 .code-review-graph/
+
+# Claude Code local agents/skills (user-specific, not project artifacts)
+.claude/
+
+# Server runtime logs
+server/*.log
