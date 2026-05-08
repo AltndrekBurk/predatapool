@@ -39,6 +39,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@solana-program/token": "^0.13.0",
     "@solana/kit": "^6.3.0",
     "@solana/kit-client-rpc": "^0.7.0",
     "@solana/kit-plugin-rpc": "^0.7.0",

@@ -9,8 +9,10 @@ import {
 import {
   SolanaSignTransaction,
   SolanaSignAndSendTransaction,
+  SolanaSignMessage,
   type SolanaSignTransactionFeature,
   type SolanaSignAndSendTransactionFeature,
+  type SolanaSignMessageFeature,
 } from "@solana/wallet-standard-features";
 import type { Address } from "@solana/kit";
 import type {
@@ -54,6 +56,7 @@ function createConnector(wallet: StandardWallet): WalletConnector {
 
       const hasSendTx = SolanaSignAndSendTransaction in wallet.features;
       const hasSignTx = SolanaSignTransaction in wallet.features;
+      const hasSignMsg = SolanaSignMessage in wallet.features;
 
       const session: WalletSession = {
         account: walletAccount,
@@ -90,6 +93,21 @@ function createConnector(wallet: StandardWallet): WalletConnector {
                 chain: chain as `${string}:${string}`,
               });
               return new Uint8Array(result.signature);
+            }
+          : undefined,
+        signMessage: hasSignMsg
+          ? async (message: Uint8Array) => {
+              const feature = wallet.features[
+                SolanaSignMessage
+              ] as SolanaSignMessageFeature[typeof SolanaSignMessage];
+              const [result] = await feature.signMessage({
+                account,
+                message,
+              });
+              return {
+                signedMessage: new Uint8Array(result.signedMessage),
+                signature: new Uint8Array(result.signature),
+              };
             }
           : undefined,
       };

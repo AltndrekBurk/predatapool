@@ -19,6 +19,8 @@ export interface Pool {
   createdAt: number;
   fetchedAt?: number;
   dataHash?: string;
+  /** Provider-defined buyer threshold for fetch trigger. */
+  minBuyers: number;
 }
 
 export interface PoolsResponse {

@@ -9,11 +9,27 @@ import {
   type Pool,
   type DataType,
 } from "../lib/server-api";
+import { useSignReceipt, toWire } from "../lib/hooks/use-sign-receipt";
+import { useApproveDelegate, DEFAULT_APPROVAL_CAP } from "../lib/hooks/use-approve-delegate";
+import { bytesFromHex, type JoinReceipt } from "../lib/receipt";
 import { useCluster } from "./cluster-context";
 
 // Base price per pool: 1 USDC = 1_000_000 micro-USDC
 const BASE_PRICE_USDC = 1_000_000;
-const MIN_BUYERS = 2;
+const SERVER_URL =
+  process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+
+/**
+ * Generate a 64-bit nonce for receipt replay protection. Random is fine —
+ * collision probability over a single buyer's lifetime is negligible.
+ */
+function makeNonce(): bigint {
+  const buf = new Uint8Array(8);
+  crypto.getRandomValues(buf);
+  let n = 0n;
+  for (let i = 0; i < 8; i++) n = (n << 8n) | BigInt(buf[i]);
+  return n;
+}
 
 interface Props {
   pool: Pool;
@@ -23,17 +39,44 @@ interface Props {
 export function PoolCard({ pool, onJoined }: Props) {
   const { wallet } = useWallet();
   const { getExplorerUrl } = useCluster();
+  const { signReceipt, canSign } = useSignReceipt();
+  const { hasApproval, delegatedAmount, approve, isApproving } =
+    useApproveDelegate();
   const [joining, setJoining] = useState(false);
 
   const address = wallet?.account.address;
   const isUserInPool = address ? pool.buyers.includes(address) : false;
+  const needsApproval = !hasApproval(BigInt(BASE_PRICE_USDC));
 
-  const progress = Math.min(1, pool.buyers.length / MIN_BUYERS);
+  // Server pool state may pre-date the minBuyers field — default to 2 for
+  // older entries returned by /pools, matching the legacy threshold.
+  const minBuyers = pool.minBuyers ?? 2;
+  const progress = Math.min(1, pool.buyers.length / minBuyers);
   const progressPercent = Math.round(progress * 100);
 
   const hoursElapsed = pool.fetchedAt
     ? (Date.now() - pool.fetchedAt) / 3_600_000
     : 0;
+
+  const handleApprove = async () => {
+    try {
+      const sig = await approve(DEFAULT_APPROVAL_CAP);
+      toast.success("Spending authorized", {
+        description: (
+          <a
+            href={getExplorerUrl(`/tx/${sig}`)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            View transaction
+          </a>
+        ),
+      });
+    } catch (err) {
+      toast.error("Authorization failed", { description: String(err) });
+    }
+  };
 
   const handleJoin = async () => {
     if (!address) {
@@ -44,17 +87,55 @@ export function PoolCard({ pool, onJoined }: Props) {
       toast.info("Already in this pool");
       return;
     }
+    if (!canSign) {
+      toast.error("Wallet does not support message signing");
+      return;
+    }
+    if (needsApproval) {
+      toast.error("Authorize spending first", {
+        description: "One-time approval — covers all pools, all data types.",
+      });
+      return;
+    }
 
     setJoining(true);
     try {
-      const res = await submitRequest(
+      // 1. Off-chain matcher join — keeps the existing pool lifecycle
+      //    (lazy create + on-chain initialize + fetch-trigger when threshold met).
+      const matcherRes = await submitRequest(
         pool.endpoint,
         pool.params,
         address,
         "api_response" as DataType
       );
+
+      // 2. Sign the canonical receipt — buyer authorizes settle_receipt.
+      //    Deadline is 10 min; max_price floored at base so post-fetch decay
+      //    can only ever decrease the actual amount pulled.
+      const receipt: JoinReceipt = {
+        poolHash: bytesFromHex(matcherRes.poolHash),
+        buyer: address,
+        maxPrice: BigInt(BASE_PRICE_USDC),
+        nonce: makeNonce(),
+        deadline: BigInt(Math.floor(Date.now() / 1000) + 600),
+      };
+      const signed = await signReceipt(receipt);
+
+      // 3. POST signed receipt to server — scheduler will pack it into the
+      //    next settle_receipt tx. Buyer never waits on chain confirmation.
+      const wire = toWire(signed);
+      const res = await fetch(`${SERVER_URL}/receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wire),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+
       toast.success("Joined pool!", {
-        description: `${res.buyerCount} buyer${res.buyerCount !== 1 ? "s" : ""} · ${res.currentPriceFormatted}`,
+        description: `${matcherRes.buyerCount} buyer${matcherRes.buyerCount !== 1 ? "s" : ""} · ${matcherRes.currentPriceFormatted}`,
       });
       onJoined?.();
     } catch (err) {
@@ -86,7 +167,7 @@ export function PoolCard({ pool, onJoined }: Props) {
       <div>
         <div className="mb-1 flex items-center justify-between text-xs text-muted">
           <span>
-            {pool.buyers.length}/{MIN_BUYERS} buyers
+            {pool.buyers.length}/{minBuyers} buyers
           </span>
           <span>{progressPercent}%</span>
         </div>
@@ -131,12 +212,42 @@ export function PoolCard({ pool, onJoined }: Props) {
         </div>
       )}
 
+      {/* Approval gate (one-time; covers all pools) */}
+      {address && needsApproval && pool.status !== "fetched" && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300 space-y-2">
+          <p>
+            One-time spending authorization required. Approve up to{" "}
+            <span className="font-mono">
+              ${(Number(DEFAULT_APPROVAL_CAP) / 1_000_000).toFixed(2)} USDC
+            </span>{" "}
+            for the protocol to settle pool joins on your behalf — no per-pool wallet signature.
+          </p>
+          <button
+            onClick={handleApprove}
+            disabled={isApproving}
+            className="w-full rounded-md bg-yellow-500/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-yellow-500/25 disabled:opacity-50 disabled:pointer-events-none"
+          >
+            {isApproving ? "Authorizing..." : "Authorize Spending"}
+          </button>
+        </div>
+      )}
+
+      {address && !needsApproval && pool.status !== "fetched" && (
+        <p className="text-xs text-muted">
+          Authorized:{" "}
+          <span className="font-mono">
+            ${(Number(delegatedAmount) / 1_000_000).toFixed(2)} USDC
+          </span>{" "}
+          remaining allowance
+        </p>
+      )}
+
       {/* Actions */}
       <div className="flex gap-2">
         {pool.status !== "fetched" && (
           <button
             onClick={handleJoin}
-            disabled={joining || isUserInPool || !address}
+            disabled={joining || isUserInPool || !address || needsApproval}
             className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
           >
             {joining
@@ -145,7 +256,9 @@ export function PoolCard({ pool, onJoined }: Props) {
                 ? "Joined"
                 : !address
                   ? "Connect Wallet"
-                  : "Join Pool"}
+                  : needsApproval
+                    ? "Authorize First"
+                    : "Join Pool"}
           </button>
         )}
 
