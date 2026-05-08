@@ -13,6 +13,12 @@ export interface DataRequest {
   params: Record<string, string>;
   buyerPubkey: string;
   maxPriceUsdc: number; // in USDC micro-units (6 decimals)
+  /**
+   * Per-provider threshold — number of distinct buyers required before the
+   * keeper triggers the fetch. Comes from ProviderAgreement.minBuyers.
+   * Falls back to 2 if omitted (legacy callers).
+   */
+  minBuyers?: number;
 }
 
 export interface PoolState {
@@ -25,13 +31,15 @@ export interface PoolState {
   fetchedAt?: number;
   dataHash?: string;
   status: "pending" | "fetching" | "fetched" | "closed";
+  /** Provider-defined buyer threshold for fetch trigger. */
+  minBuyers: number;
 }
 
 // In-memory pool registry (replace with Redis in production)
 const pools = new Map<string, PoolState>();
 
 const POOL_TIMEOUT_MS = 60_000; // 60s: trigger fetch even if threshold not met
-const MIN_BUYERS = 2; // minimum buyers before auto-fetch
+const DEFAULT_MIN_BUYERS = 2; // fallback when caller omits per-provider threshold
 
 /**
  * Hash a data request to a canonical 32-byte key.
@@ -70,10 +78,13 @@ export function joinPool(request: DataRequest): {
       buyers: [],
       createdAt: Date.now(),
       status: "pending",
+      minBuyers: request.minBuyers ?? DEFAULT_MIN_BUYERS,
     };
     pools.set(hashHex, pool);
     isNewPool = true;
-    console.log(`[matcher] New pool created: ${hashHex.slice(0, 16)}...`);
+    console.log(
+      `[matcher] New pool created: ${hashHex.slice(0, 16)}... (min_buyers=${pool.minBuyers})`
+    );
   }
 
   // Add buyer if not already in pool
@@ -87,7 +98,7 @@ export function joinPool(request: DataRequest): {
   const ageMs = Date.now() - pool.createdAt;
   const shouldTriggerFetch =
     pool.status === "pending" &&
-    (pool.buyers.length >= MIN_BUYERS || ageMs >= POOL_TIMEOUT_MS);
+    (pool.buyers.length >= pool.minBuyers || ageMs >= POOL_TIMEOUT_MS);
 
   return { pool, shouldTriggerFetch, isNewPool };
 }
