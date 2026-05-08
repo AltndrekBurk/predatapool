@@ -22,4 +22,20 @@ pub enum DataPoolError {
     Overflow,
     #[msg("Invalid decay rate: must be between 1 and 10000 basis points")]
     InvalidDecayRate,
+    #[msg("Caller is not authorized to claim this revenue")]
+    UnauthorizedClaim,
+    #[msg("Invalid revenue split: provider_share + sponsor_share must be <= 10000 bps")]
+    InvalidRevenueSplit,
+    #[msg("Receipt deadline has passed")]
+    ReceiptExpired,
+    #[msg("Receipt max_price below current pool price")]
+    ReceiptPriceTooLow,
+    #[msg("Receipt pool_hash does not match this pool")]
+    ReceiptPoolMismatch,
+    #[msg("Ed25519 verify instruction missing or malformed")]
+    EdVerifyMissing,
+    #[msg("Ed25519 instruction does not authorize this receipt")]
+    EdVerifyMismatch,
+    #[msg("Receipt domain prefix incorrect — wrong protocol or version")]
+    ReceiptBadDomain,
 }
