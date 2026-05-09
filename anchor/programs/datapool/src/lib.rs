@@ -72,6 +72,7 @@ pub mod datapool {
         pool.provider_share_bps = provider_share_bps;
         pool.provider_decay_bps_per_hour = provider_decay_bps_per_hour;
         pool.provider_paid = 0;
+        pool.pre_fetch_collected = 0;
         pool.storage_uri = String::new();
         pool.bump = ctx.bumps.pool;
 

@@ -24,6 +24,8 @@ mod tests {
             provider_share_bps: 0,
             provider_decay_bps_per_hour: 0,
             provider_paid: 0,
+            pre_fetch_collected: 0,
+            storage_uri: String::new(),
             bump: 0,
         }
     }
@@ -55,6 +57,8 @@ mod tests {
             provider_share_bps,
             provider_decay_bps_per_hour,
             provider_paid: 0,
+            pre_fetch_collected: 0,
+            storage_uri: String::new(),
             bump: 0,
         }
     }
@@ -193,6 +197,86 @@ mod tests {
         let max_sponsor = post_fetch_revenue * sponsor_share / 10000;
         // Combined claims must fit within post-fetch revenue
         assert!(max_provider + max_sponsor <= post_fetch_revenue);
+    }
+
+    // ── claim_rebate accounting tests ──────────────────────────────────────
+    // The pre-fix bug: rebate was computed against `base_price * buyer_count`,
+    // which counts BOTH pre and post buyers. Fix: track `pre_fetch_collected`
+    // separately and derive `post_fetch_revenue = total - pre_fetch_collected`.
+
+    /// Mirror of the calc inside `handle_claim_rebate` for unit testing.
+    fn rebate_amount(
+        pool_total_collected: u64,
+        pool_pre_fetch_collected: u64,
+        rebate_share_bps: u64,
+        sponsor_amount_paid: u64,
+    ) -> u64 {
+        let post_fetch_revenue =
+            pool_total_collected.saturating_sub(pool_pre_fetch_collected);
+        let den = pool_pre_fetch_collected.max(1) as u128;
+        ((post_fetch_revenue as u128)
+            .saturating_mul(rebate_share_bps as u128)
+            .saturating_div(10000)
+            .saturating_mul(sponsor_amount_paid as u128)
+            .saturating_div(den)) as u64
+    }
+
+    #[test]
+    fn test_rebate_pays_pre_fetch_sponsor_after_post_fetch_buyers() {
+        // 2 sponsors paid 1M each pre-fetch (total pre = 2M).
+        // 3 post-fetch buyers paid 800k each (total = 2M + 2.4M = 4.4M).
+        // post_fetch_revenue = 4.4M - 2M = 2.4M.
+        // sponsor share pool = 30% of 2.4M = 720k.
+        // each sponsor (1M / 2M) = 50% → rebate = 360k.
+        let r = rebate_amount(4_400_000, 2_000_000, 3000, 1_000_000);
+        assert_eq!(r, 360_000);
+    }
+
+    #[test]
+    fn test_rebate_zero_when_no_post_fetch_revenue() {
+        // All buyers were sponsors, no post-fetch joins → no rebate to share.
+        let r = rebate_amount(2_000_000, 2_000_000, 3000, 1_000_000);
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_rebate_split_pro_rata_across_sponsors() {
+        // pre = 3M (sponsor A 1M, sponsor B 2M), post = 3M, total = 6M.
+        // post_fetch_revenue = 3M, rebate pool = 30% = 900k.
+        // A's share = 1M/3M = 33.3% → 300k.
+        // B's share = 2M/3M = 66.6% → 600k.
+        let a = rebate_amount(6_000_000, 3_000_000, 3000, 1_000_000);
+        let b = rebate_amount(6_000_000, 3_000_000, 3000, 2_000_000);
+        assert_eq!(a, 300_000);
+        assert_eq!(b, 600_000);
+        // Total claims must not exceed the rebate pool.
+        assert!(a + b <= 900_000);
+    }
+
+    #[test]
+    fn test_rebate_safe_when_pre_fetch_collected_is_zero() {
+        // Edge case: claim_rebate called before any sponsor settled.
+        // Should not divide by zero — `.max(1)` guards.
+        let r = rebate_amount(0, 0, 3000, 0);
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_rebate_buggy_pre_fix_calc_yields_zero_for_real_workload() {
+        // Replays the OLD (broken) formula to document why the field was needed:
+        //   pre_fetch_collected_bug = base_price * buyer_count
+        // For 2 sponsors @ 1M base + 3 post-fetch buyers @ 800k decayed:
+        //   total_collected = 4.4M, buyer_count = 5, base = 1M
+        //   pre_fetch_collected_bug = 1M * 5 = 5M (over-counts!)
+        //   post_fetch_revenue_bug = 4.4M - 5M  → saturates to 0
+        let total_collected: u64 = 4_400_000;
+        let buyer_count: u64 = 5;
+        let base_price: u64 = 1_000_000;
+        let pre_buggy = base_price.saturating_mul(buyer_count);
+        let post_buggy = total_collected.saturating_sub(pre_buggy);
+        assert_eq!(post_buggy, 0);
+        // Versus the fixed formula on the same workload — 360k rebate available.
+        assert_eq!(rebate_amount(4_400_000, 2_000_000, 3000, 1_000_000), 360_000);
     }
 
     #[test]

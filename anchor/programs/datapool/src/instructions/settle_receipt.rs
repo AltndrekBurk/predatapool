@@ -203,6 +203,14 @@ pub fn handle_settle_receipt<'info>(
         .checked_add(price)
         .ok_or(DataPoolError::Overflow)?;
     pool.buyer_count = pool.buyer_count.saturating_add(1);
+    if is_sponsor {
+        // Track pre-fetch revenue separately — claim_rebate uses this to
+        // derive post-fetch revenue (the rebate-able pool).
+        pool.pre_fetch_collected = pool
+            .pre_fetch_collected
+            .checked_add(price)
+            .ok_or(DataPoolError::Overflow)?;
+    }
 
     msg!(
         "Settled receipt: buyer {} paid {} (sponsor: {}, nonce: {})",

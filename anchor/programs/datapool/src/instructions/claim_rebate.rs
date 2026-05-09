@@ -90,17 +90,18 @@ pub fn handle_claim_rebate<'info>(
 
     let pool = &ctx.accounts.pool;
 
-    // Calculate post-fetch revenue (mirrors the legacy logic).
-    // Pre-fetch sponsors paid base_price; post-fetch buyers pay decayed price.
-    let pre_fetch_collected = (pool.base_price_usdc as u128)
-        .checked_mul(pool.buyer_count as u128)
-        .unwrap_or(0);
-    let total = pool.total_collected as u128;
-    let post_fetch_revenue = total.saturating_sub(pre_fetch_collected) as u64;
+    // Post-fetch revenue = everything collected minus what sponsors paid in.
+    // Reads `pre_fetch_collected` directly — derived field maintained by
+    // settle_receipt so we don't have to back out per-buyer prices here.
+    let post_fetch_revenue = pool
+        .total_collected
+        .saturating_sub(pool.pre_fetch_collected);
 
-    // Sponsor's proportional share = amount_paid / total_collected.
+    // Sponsor's proportional share = amount_paid / pre_fetch_collected
+    // (NOT total_collected — sponsors share the rebate pool among themselves
+    // pro-rata to their pre-fetch contributions).
     let sponsor_share_num = slot_data.amount_paid as u128;
-    let sponsor_share_den = pool.total_collected.max(1) as u128;
+    let sponsor_share_den = pool.pre_fetch_collected.max(1) as u128;
 
     let rebate_amount = (post_fetch_revenue as u128)
         .saturating_mul(REBATE_SHARE_BPS as u128)

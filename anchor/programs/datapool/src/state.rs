@@ -67,6 +67,16 @@ pub struct DataPool {
     /// Cumulative USDC paid to provider so far (for incremental claim accounting).
     pub provider_paid: u64,
 
+    /// USDC collected from PRE-FETCH buyers (sponsors). Incremented in
+    /// `settle_receipt` only when `is_sponsor == true` (i.e. pool not yet
+    /// fetched). `claim_rebate` reads this directly to compute
+    /// `post_fetch_revenue = total_collected - pre_fetch_collected`.
+    ///
+    /// Without this dedicated field the rebate calculation degenerates to
+    /// zero: deriving pre-fetch revenue as `base_price * buyer_count`
+    /// over-counts because `buyer_count` lumps pre- and post-fetch joins.
+    pub pre_fetch_collected: u64,
+
     /// Where to fetch the raw payload bytes — IPFS CID or HTTP(S) URL.
     /// Buyers pull the bytes, hash locally with SHA-256, and compare with
     /// `data_hash` before signing a settle receipt. Capped at 128 chars so a
