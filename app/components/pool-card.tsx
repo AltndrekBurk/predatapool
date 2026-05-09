@@ -1,17 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import useSWR from "swr";
 import { toast } from "sonner";
 import { useWallet } from "../lib/wallet/context";
 import {
   submitRequest,
   formatUsdc,
+  getPoolMetadata,
+  fetchAndVerify,
+  DataPoolHashMismatchError,
   type Pool,
   type DataType,
+  type PoolMetadata,
 } from "../lib/server-api";
 import { useSignReceipt, toWire } from "../lib/hooks/use-sign-receipt";
 import { useApproveDelegate, DEFAULT_APPROVAL_CAP } from "../lib/hooks/use-approve-delegate";
 import { bytesFromHex, type JoinReceipt } from "../lib/receipt";
+import { findPoolPda } from "../lib/program";
 import { useCluster } from "./cluster-context";
 import {
   poolLifecycle,
@@ -59,6 +65,72 @@ export function PoolCard({ pool, onJoined }: Props) {
   const lifecycle: Lifecycle = poolLifecycle(pool.status, pool.expiresAt);
   const isCached = lifecycle === "cached";
   const isStale = lifecycle === "stale";
+  const isFetched = pool.status === "fetched";
+
+  // Pull on-chain-published metadata when the pool has been fetched.
+  // Source of truth for storage_uri (in production = IPFS CID; for now =
+  // server payload URL written by register_dataset).
+  const { data: metadata } = useSWR<PoolMetadata>(
+    isFetched ? ["pool-metadata", pool.requestHashHex] : null,
+    () => getPoolMetadata(pool.requestHashHex),
+    { revalidateOnFocus: false, refreshInterval: 5_000 }
+  );
+
+  // Derive the on-chain DataPool PDA — that's what the Explorer link should
+  // point at, not the raw 32-byte request_hash (which isn't an account).
+  const [poolPda, setPoolPda] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    findPoolPda(bytesFromHex(pool.requestHashHex))
+      .then((pda) => {
+        if (!cancelled) setPoolPda(pda.toString());
+      })
+      .catch(() => {
+        // Bad hex — leave undefined; the explorer link falls back to omitted.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pool.requestHashHex]);
+
+  // Local verification state — drives the Verify Payload button + result line.
+  type VerifyState =
+    | { status: "idle" }
+    | { status: "verifying" }
+    | { status: "ok"; bytesLength: number }
+    | { status: "mismatch"; expected: string; actual: string }
+    | { status: "error"; message: string };
+  const [verify, setVerify] = useState<VerifyState>({ status: "idle" });
+
+  const handleVerify = async () => {
+    if (!metadata?.payloadUrl || !metadata.dataHash) {
+      toast.error("Pool not yet fetched — nothing to verify");
+      return;
+    }
+    setVerify({ status: "verifying" });
+    try {
+      const result = await fetchAndVerify(metadata);
+      setVerify({ status: "ok", bytesLength: result.bytes.length });
+      toast.success("Hash matches on-chain", {
+        description: `${result.bytes.length} bytes verified`,
+      });
+    } catch (err) {
+      if (err instanceof DataPoolHashMismatchError) {
+        setVerify({
+          status: "mismatch",
+          expected: err.expected,
+          actual: err.actual,
+        });
+        toast.error("Hash mismatch — keeper may be lying", {
+          description: `expected ${err.expected.slice(0, 12)}…, got ${err.actual.slice(0, 12)}…`,
+        });
+      } else {
+        const message = (err as Error).message ?? String(err);
+        setVerify({ status: "error", message });
+        toast.error("Verify failed", { description: message });
+      }
+    }
+  };
 
   // Server pool state may pre-date the minBuyers field — default to 2 for
   // older entries returned by /pools, matching the legacy threshold.
@@ -191,7 +263,7 @@ export function PoolCard({ pool, onJoined }: Props) {
 
       {/* Cache-hit savings callout — the headline x402-MPP message */}
       {isCached && (
-        <div className="rounded-xl border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
+        <div className="dp-anim-callout-in rounded-xl border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
           <p className="text-xs font-semibold text-green-700 dark:text-green-300">
             Cache hit · payment already settled
           </p>
@@ -208,7 +280,7 @@ export function PoolCard({ pool, onJoined }: Props) {
       )}
 
       {isStale && (
-        <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 px-4 py-3 space-y-1">
+        <div className="dp-anim-callout-in rounded-xl border border-orange-500/30 bg-orange-500/5 px-4 py-3 space-y-1">
           <p className="text-xs font-semibold text-orange-700 dark:text-orange-300">
             Stale · freshness window elapsed
           </p>
@@ -256,15 +328,52 @@ export function PoolCard({ pool, onJoined }: Props) {
         )}
       </div>
 
-      {/* Data hash if fetched */}
+      {/* Data hash + storage URI + Verify */}
       {pool.dataHash && (
-        <div className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2">
-          <p className="text-xs uppercase tracking-wide text-green-600 dark:text-green-400 mb-0.5">
-            Data Hash (on-chain)
-          </p>
-          <p className="font-mono text-xs text-foreground/70 break-all">
-            {pool.dataHash.slice(0, 32)}...
-          </p>
+        <div className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2.5 space-y-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">
+              Data Hash (on-chain)
+            </p>
+            <p className="font-mono text-[11px] text-foreground/70 break-all">
+              {pool.dataHash.slice(0, 32)}…
+            </p>
+          </div>
+
+          {metadata?.storageUri && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">
+                Storage URI (on-chain)
+              </p>
+              <a
+                href={metadata.storageUri}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[11px] text-blue-600 dark:text-blue-400 underline break-all"
+                title={metadata.storageUri}
+              >
+                {shortenStorageUri(metadata.storageUri)}
+              </a>
+            </div>
+          )}
+
+          {/* Verify Payload — pulls bytes, hashes locally, asserts match. */}
+          <div className="pt-1 flex items-center gap-2">
+            <button
+              onClick={handleVerify}
+              disabled={
+                verify.status === "verifying" || !metadata?.payloadUrl
+              }
+              className="rounded-md border border-green-500/40 bg-green-500/10 px-2.5 py-1 text-[11px] font-semibold text-green-700 dark:text-green-300 transition hover:bg-green-500/20 disabled:opacity-50 disabled:pointer-events-none"
+            >
+              {verify.status === "verifying"
+                ? "Verifying…"
+                : verify.status === "ok"
+                  ? "Re-verify"
+                  : "Verify Payload"}
+            </button>
+            <VerifyResultPill state={verify} />
+          </div>
         </div>
       )}
 
@@ -338,14 +447,17 @@ export function PoolCard({ pool, onJoined }: Props) {
           </button>
         )}
 
-        <a
-          href={getExplorerUrl(`/address/${pool.requestHashHex}`)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-lg border border-border-low bg-card px-3 py-2 text-xs font-medium text-muted transition hover:bg-cream hover:text-foreground"
-        >
-          Explorer ↗
-        </a>
+        {poolPda && (
+          <a
+            href={getExplorerUrl(`/address/${poolPda}`)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`On-chain DataPool PDA · ${poolPda}`}
+            className="rounded-lg border border-border-low bg-card px-3 py-2 text-xs font-medium text-muted transition hover:bg-cream hover:text-foreground"
+          >
+            Explorer ↗
+          </a>
+        )}
       </div>
 
       {/* Params if any */}
@@ -362,6 +474,52 @@ export function PoolCard({ pool, onJoined }: Props) {
       )}
     </div>
   );
+}
+
+function VerifyResultPill({
+  state,
+}: {
+  state:
+    | { status: "idle" }
+    | { status: "verifying" }
+    | { status: "ok"; bytesLength: number }
+    | { status: "mismatch"; expected: string; actual: string }
+    | { status: "error"; message: string };
+}) {
+  if (state.status === "idle" || state.status === "verifying") return null;
+  if (state.status === "ok") {
+    return (
+      <span
+        className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:text-green-300"
+        title={`${state.bytesLength} bytes hashed and matched on-chain data_hash`}
+      >
+        ✓ Hash matches
+      </span>
+    );
+  }
+  if (state.status === "mismatch") {
+    return (
+      <span
+        className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:text-red-300"
+        title={`expected ${state.expected}\nactual   ${state.actual}`}
+      >
+        ✗ Slash signal
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold text-orange-700 dark:text-orange-300"
+      title={state.message}
+    >
+      ✗ Verify error
+    </span>
+  );
+}
+
+function shortenStorageUri(uri: string): string {
+  if (uri.length <= 40) return uri;
+  return `${uri.slice(0, 26)}…${uri.slice(-12)}`;
 }
 
 function formatDuration(ms: number): string {

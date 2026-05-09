@@ -92,3 +92,27 @@
     font-family: var(--font-sans);
   }
 }
+
+/* One-shot entry for the cache-hit / verification callouts. The animation
+   runs once on first paint, so the green box doesn't quietly slide into
+   the page — it announces itself. Reduced-motion users get the static end state. */
+@keyframes datapool-callout-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dp-anim-callout-in {
+  animation: datapool-callout-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-anim-callout-in {
+    animation: none;
+  }
+}
