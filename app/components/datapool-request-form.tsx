@@ -8,6 +8,11 @@ import {
   type DataType,
   type RequestResponse,
 } from "../lib/server-api";
+import {
+  poolLifecycle,
+  LIFECYCLE_LABEL,
+  LIFECYCLE_BADGE,
+} from "../lib/lifecycle";
 
 const DATA_TYPE_LABELS: Record<DataType, string> = {
   weather: "Weather (100 bps/hr decay)",
@@ -75,9 +80,27 @@ export function DatapoolRequestForm({ onPoolJoined }: Props) {
   return (
     <section className="w-full space-y-4 rounded-2xl border border-border-low bg-card p-6 shadow-[0_20px_80px_-50px_rgba(0,0,0,0.35)]">
       <div className="space-y-1">
-        <p className="text-lg font-semibold">Request Data</p>
+        <p className="text-lg font-semibold">Find or Create Pool</p>
         <p className="text-sm text-muted">
-          Submit a data endpoint. If others want the same data, your costs are pooled.
+          Submit an endpoint. Matching canonical key → join existing pool
+          (cache hit if fresh). Otherwise → new pool, you become the first sponsor.
+        </p>
+      </div>
+
+      {/* Savings preview — static at this stage; the real number lands in the
+          response card once we know if it was a cache hit. */}
+      <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-4 space-y-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 dark:text-green-300">
+          Why it's cheaper
+        </p>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <SavingsCell label="Solo x402" value="$1.00" />
+          <SavingsCell label="Pooled" value="≈ $0.50" highlight />
+          <SavingsCell label="Cached" value="$0.00" highlight />
+        </div>
+        <p className="text-[11px] leading-relaxed text-green-700/80 dark:text-green-300/80">
+          Solo = pay upstream every fetch. Pooled = N buyers share one fetch. Cached
+          = inside the freshness window, payment is already done — just verify and sign.
         </p>
       </div>
 
@@ -136,19 +159,30 @@ export function DatapoolRequestForm({ onPoolJoined }: Props) {
           disabled={loading || !endpoint}
           className="w-full rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-xs transition hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
         >
-          {loading ? "Submitting..." : "Submit Request"}
+          {loading ? "Submitting..." : "Find or Create Pool"}
         </button>
       </div>
 
       {/* Last response */}
       {lastResponse && (
-        <div className="rounded-xl border border-border-low bg-cream/30 p-4 space-y-2">
+        <div
+          className={`rounded-xl border p-4 space-y-2 ${
+            lastResponse.cacheHit
+              ? "border-green-500/30 bg-green-500/5"
+              : "border-border-low bg-cream/30"
+          }`}
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium uppercase tracking-wide text-muted">
-              Pool Result
+              {lastResponse.cacheHit ? "Cache hit" : "Pool result"}
             </span>
-            <StatusBadge status={lastResponse.status} />
+            <ResponseLifecycleBadge response={lastResponse} />
           </div>
+          {lastResponse.cacheHit && (
+            <p className="text-xs text-green-700 dark:text-green-300">
+              Payment already settled · pull payload from cache, verify hash, sign receipt.
+            </p>
+          )}
           <p className="font-mono text-xs text-foreground/70 truncate">
             {lastResponse.poolHash}
           </p>
@@ -157,7 +191,13 @@ export function DatapoolRequestForm({ onPoolJoined }: Props) {
             <Stat label="Price" value={lastResponse.currentPriceFormatted} />
             <Stat
               label="Fetch"
-              value={lastResponse.fetchTriggered ? "Triggered" : "Waiting"}
+              value={
+                lastResponse.cacheHit
+                  ? "Skipped (cached)"
+                  : lastResponse.fetchTriggered
+                    ? "Triggered"
+                    : "Waiting"
+              }
             />
           </div>
         </div>
@@ -166,18 +206,43 @@ export function DatapoolRequestForm({ onPoolJoined }: Props) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400",
-    fetching: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-    fetched: "bg-green-500/15 text-green-600 dark:text-green-400",
-  };
+function ResponseLifecycleBadge({ response }: { response: RequestResponse }) {
+  // The /request response only carries `status` + `expiresAt`. Reuse the
+  // shared lifecycle vocabulary so the badge here matches the pool card.
+  const lc = poolLifecycle(response.status, response.expiresAt);
   return (
     <span
-      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${colors[status] ?? "bg-cream text-muted"}`}
+      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${LIFECYCLE_BADGE[lc]}`}
     >
-      {status}
+      {LIFECYCLE_LABEL[lc]}
     </span>
+  );
+}
+
+function SavingsCell({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-lg px-2 py-2 ${
+        highlight ? "bg-green-500/10" : "bg-cream/40"
+      }`}
+    >
+      <p className="text-[10px] uppercase tracking-wide text-muted">{label}</p>
+      <p
+        className={`mt-0.5 text-sm font-bold tabular-nums ${
+          highlight ? "text-green-700 dark:text-green-300" : "text-foreground"
+        }`}
+      >
+        {value}
+      </p>
+    </div>
   );
 }
 

@@ -7,6 +7,7 @@ import { ClusterSelect } from "./components/cluster-select";
 import { WalletButton } from "./components/wallet-button";
 import { DatapoolRequestForm } from "./components/datapool-request-form";
 import { PoolList } from "./components/pool-list";
+import { KpiStrip } from "./components/kpi-strip";
 import { type RequestResponse } from "./lib/server-api";
 
 export default function Home() {
@@ -38,29 +39,34 @@ export default function Home() {
 
         <main className="mx-auto max-w-6xl px-6">
           {/* Hero */}
-          <section className="pt-6 pb-16 md:pt-8 md:pb-24">
+          <section className="pt-6 pb-10 md:pt-8 md:pb-14">
             <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
               <div>
+                <p className="mb-2 inline-flex items-center gap-2 rounded-full border border-border-low bg-cream/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500" />
+                  x402-MPP · Solana L2
+                </p>
                 <h1 className="font-black tracking-tight text-foreground">
-                  <span className="block text-5xl md:text-6xl">Buyer-Side</span>
+                  <span className="block text-5xl md:text-6xl">Pay once.</span>
                   <span className="block text-6xl md:text-7xl text-foreground/50">
-                    Demand Pooling
+                    Share N ways.
                   </span>
                 </h1>
               </div>
 
               <div className="max-w-lg space-y-3">
                 <p className="text-sm leading-relaxed text-foreground/60">
-                  Multiple buyers pool their demand for the same IoT/DePIN/API
-                  data. One x402 fetch, shared cost, retroactive rebates for
-                  early sponsors. Built on Solana.
+                  An aggregation layer for x402-priced HTTP endpoints. N agents
+                  asking for the same data → one upstream fetch, one payment,
+                  payload + on-chain hash served to all. Light Protocol
+                  compressed accounts drop both payment fees and compute costs.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    "Request deduplication",
-                    "USDC escrow",
-                    "Time-decay pricing",
-                    "Retroactive rebates",
+                    "Request dedup (canonical key)",
+                    "x402 payment loop",
+                    "Cache + reuse-fee TTL",
+                    "Hash-verified payload",
                   ].map((tag) => (
                     <span
                       key={tag}
@@ -74,25 +80,28 @@ export default function Home() {
             </div>
           </section>
 
+          {/* KPI strip — live savings story */}
+          <KpiStrip />
+
           {/* Main content */}
-          <div className="space-y-10 pb-24">
-            {/* How it works */}
+          <div className="mt-10 space-y-10 pb-24">
+            {/* How it saves */}
             <section className="grid gap-4 sm:grid-cols-3">
               {[
                 {
                   step: "01",
-                  title: "Submit Request",
-                  desc: "Buyer submits a data endpoint. If a matching pool exists, they join it.",
+                  title: "Pool",
+                  desc: "Buyers requesting the same canonical key (provider+method+path+params+freshness) land in the same pool.",
                 },
                 {
                   step: "02",
-                  title: "Pool Threshold",
-                  desc: `Once ${2} buyers join, the keeper triggers a single x402 fetch and registers the dataset on-chain.`,
+                  title: "Pay & Fetch",
+                  desc: "Threshold met → keeper pays the upstream once via @solana/mpp, downloads, registers data_hash + storage_uri on-chain.",
                 },
                 {
                   step: "03",
-                  title: "Claim Rebate",
-                  desc: "Early sponsors receive 30% of post-fetch revenue. Price decays over time to attract more buyers.",
+                  title: "Reuse",
+                  desc: "Within the freshness window, every later buyer is a cache hit — same payload, decayed reuse fee, sponsors rebated.",
                 },
               ].map(({ step, title, desc }) => (
                 <div

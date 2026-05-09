@@ -13,6 +13,14 @@ import { useSignReceipt, toWire } from "../lib/hooks/use-sign-receipt";
 import { useApproveDelegate, DEFAULT_APPROVAL_CAP } from "../lib/hooks/use-approve-delegate";
 import { bytesFromHex, type JoinReceipt } from "../lib/receipt";
 import { useCluster } from "./cluster-context";
+import {
+  poolLifecycle,
+  LIFECYCLE_LABEL,
+  LIFECYCLE_DESCRIPTION,
+  LIFECYCLE_BADGE,
+  LIFECYCLE_DOT,
+  type Lifecycle,
+} from "../lib/lifecycle";
 
 // Base price per pool: 1 USDC = 1_000_000 micro-USDC
 const BASE_PRICE_USDC = 1_000_000;
@@ -48,6 +56,10 @@ export function PoolCard({ pool, onJoined }: Props) {
   const isUserInPool = address ? pool.buyers.includes(address) : false;
   const needsApproval = !hasApproval(BigInt(BASE_PRICE_USDC));
 
+  const lifecycle: Lifecycle = poolLifecycle(pool.status, pool.expiresAt);
+  const isCached = lifecycle === "cached";
+  const isStale = lifecycle === "stale";
+
   // Server pool state may pre-date the minBuyers field — default to 2 for
   // older entries returned by /pools, matching the legacy threshold.
   const minBuyers = pool.minBuyers ?? 2;
@@ -57,6 +69,13 @@ export function PoolCard({ pool, onJoined }: Props) {
   const hoursElapsed = pool.fetchedAt
     ? (Date.now() - pool.fetchedAt) / 3_600_000
     : 0;
+
+  // Time left in the freshness window — drives the "Cached · expires in Nm" line.
+  const msUntilExpiry =
+    pool.expiresAt && pool.expiresAt > Date.now()
+      ? pool.expiresAt - Date.now()
+      : 0;
+  const expiresInLabel = formatDuration(msUntilExpiry);
 
   const handleApprove = async () => {
     try {
@@ -151,7 +170,9 @@ export function PoolCard({ pool, onJoined }: Props) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <StatusDot status={pool.status} />
+            <span
+              className={`inline-block h-2 w-2 rounded-full flex-shrink-0 ${LIFECYCLE_DOT[lifecycle]}`}
+            />
             <span className="font-mono text-xs text-muted truncate">
               {pool.requestHashHex.slice(0, 8)}...{pool.requestHashHex.slice(-6)}
             </span>
@@ -160,8 +181,43 @@ export function PoolCard({ pool, onJoined }: Props) {
             {shortenEndpoint(pool.endpoint)}
           </p>
         </div>
-        <StatusBadge status={pool.status} />
+        <span
+          className={`flex-shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${LIFECYCLE_BADGE[lifecycle]}`}
+          title={LIFECYCLE_DESCRIPTION[lifecycle]}
+        >
+          {LIFECYCLE_LABEL[lifecycle]}
+        </span>
       </div>
+
+      {/* Cache-hit savings callout — the headline x402-MPP message */}
+      {isCached && (
+        <div className="rounded-xl border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
+          <p className="text-xs font-semibold text-green-700 dark:text-green-300">
+            Cache hit · payment already settled
+          </p>
+          <p className="text-[11px] text-green-700/80 dark:text-green-300/80">
+            Pull the payload from cache, verify against on-chain hash, sign a
+            decayed-price receipt. No new upstream fetch.
+          </p>
+          {expiresInLabel && (
+            <p className="text-[11px] text-green-700/60 dark:text-green-300/60">
+              Window expires in <span className="font-mono">{expiresInLabel}</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {isStale && (
+        <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 px-4 py-3 space-y-1">
+          <p className="text-xs font-semibold text-orange-700 dark:text-orange-300">
+            Stale · freshness window elapsed
+          </p>
+          <p className="text-[11px] text-orange-700/80 dark:text-orange-300/80">
+            Next request to this canonical key creates a fresh pool and triggers
+            a new upstream fetch + payment.
+          </p>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div>
@@ -244,31 +300,41 @@ export function PoolCard({ pool, onJoined }: Props) {
 
       {/* Actions */}
       <div className="flex gap-2">
-        {pool.status !== "fetched" && (
+        {(lifecycle === "pooling" ||
+          lifecycle === "fetching" ||
+          lifecycle === "cached") && (
           <button
             onClick={handleJoin}
             disabled={joining || isUserInPool || !address || needsApproval}
             className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
           >
             {joining
-              ? "Joining..."
+              ? lifecycle === "cached"
+                ? "Settling..."
+                : "Joining..."
               : isUserInPool
-                ? "Joined"
+                ? lifecycle === "cached"
+                  ? "Joined ✓ Cached"
+                  : "Joined"
                 : !address
                   ? "Connect Wallet"
                   : needsApproval
                     ? "Authorize First"
-                    : "Join Pool"}
+                    : lifecycle === "cached"
+                      ? "Catch Cache Hit"
+                      : lifecycle === "fetching"
+                        ? "Wait for Fetch"
+                        : "Join Pool"}
           </button>
         )}
 
-        {pool.status === "fetched" && isUserInPool && (
+        {lifecycle === "stale" && (
           <button
             disabled
-            title="Claim rebate via on-chain instruction after devnet deploy"
-            className="flex-1 rounded-lg border border-border-low bg-cream px-4 py-2 text-sm font-medium transition hover:bg-cream/70 disabled:opacity-60"
+            title="Submit a fresh request via the form — this pool's window has elapsed."
+            className="flex-1 rounded-lg border border-border-low bg-cream/50 px-4 py-2 text-sm font-medium text-muted transition disabled:opacity-60"
           >
-            Claim Rebate (deploy first)
+            Refetch via new request
           </button>
         )}
 
@@ -298,32 +364,14 @@ export function PoolCard({ pool, onJoined }: Props) {
   );
 }
 
-function StatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending: "bg-yellow-400",
-    fetching: "bg-blue-400 animate-pulse",
-    fetched: "bg-green-400",
-  };
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full flex-shrink-0 ${colors[status] ?? "bg-muted"}`}
-    />
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400",
-    fetching: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-    fetched: "bg-green-500/15 text-green-600 dark:text-green-400",
-  };
-  return (
-    <span
-      className={`flex-shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${colors[status] ?? "bg-cream text-muted"}`}
-    >
-      {status}
-    </span>
-  );
+function formatDuration(ms: number): string {
+  if (ms <= 0) return "";
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  if (min < 60) return `${min}m ${totalSec % 60}s`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
 }
 
 function shortenEndpoint(url: string): string {

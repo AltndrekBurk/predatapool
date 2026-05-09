@@ -178,7 +178,12 @@ export async function fetchAndVerify(
 
 /** SHA-256 in hex via Web Crypto API — works in browser + Node 20+. */
 export async function sha256Hex(input: Uint8Array): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", input);
+  // Cast through ArrayBufferView — TS 5.7+ tightened BufferSource to require
+  // the buffer slot to be ArrayBuffer (not the generic ArrayBufferLike).
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    input as unknown as ArrayBuffer
+  );
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
