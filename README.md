@@ -47,28 +47,28 @@ Out of scope for the first MVP:
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   AGENT A                           │
-│  1. API'ye istek at (normal yol)                    │
-│  2. SDK hook: veriyi + zarfı pool'a gönder          │
+│  1. Make the API request on the normal path         │
+│  2. SDK hook: send the data + envelope to the pool  │
 └────────────────┬────────────────────────────────────┘
                  │ DataEnvelope (imzali)
                  ▼
 ┌─────────────────────────────────────────────────────┐
 │              PreDataPool Node                       │
-│  - RAM/Redis'te AoI-aware cache                    │
+│  - AoI-aware cache in RAM/Redis                    │
 │  - canonical request key                           │
 │  - encrypted payload at rest                       │
 │  - expiry / signature verification                 │
-│  - Merkle proof doğrulama                          │
-│  - TTL: τ_decay (veri tipine göre)                 │
-│  - Solana'da micro-settlement kaydı                │
+│  - Merkle proof verification                       │
+│  - TTL: τ_decay (based on data type)               │
+│  - Solana micro-settlement record                  │
 └────────────────┬────────────────────────────────────┘
                  │ cache hit
                  ▼
 ┌─────────────────────────────────────────────────────┐
 │                   AGENT B                           │
-│  1. Pool'u sorgula (önce bak)                       │
-│  2. Cache hit → doğrula → kullan → ödeme paylaş     │
-│  3. Cache miss → direkt API çek → pool'a bildir     │
+│  1. Query the pool first                            │
+│  2. Cache hit → verify → use → share payment        │
+│  3. Cache miss → fetch API directly → report pool   │
 └─────────────────────────────────────────────────────┘
 ```
 
