@@ -1,57 +1,95 @@
 # PreDataPool
 
-PreDataPool is an MVP protocol for public API data sharing between agents:
-one canonical request, one upstream fetch/payment, encrypted cache reuse, and
-buyer-side verification.
+PreDataPool is a machine-to-machine data reuse layer for IoT devices, edge
+workers, vehicles, and autonomous agents that keep asking for the same public
+data.
 
-## Current Scope
+The goal is simple: one canonical request, one upstream fetch/payment, one
+encrypted cache entry, and verified reuse for later consumers.
 
-The first target is deliberately narrow:
+## What It Solves
 
-- public, shareable API data
-- x402/mock upstream payment flow
+Repeated requests for the same public API payload waste:
+
+- provider compute
+- bandwidth
+- rate-limit budget
+- duplicate payment flow
+- downstream verification effort
+
+PreDataPool pools that work around a canonical request key and reuses the
+result while freshness still holds.
+
+## MVP Scope
+
+The first version is intentionally narrow:
+
+- public, shareable machine-to-machine data
+- IoT and edge telemetry
+- weather, price, chain, and other public feeds
 - canonical request deduplication
-- AoI/freshness-window cache reuse
-- AES-GCM encrypted payload storage
-- buyer-side decrypt and SHA-256 verification
-- Solana devnet settlement primitives
+- AoI / freshness-window cache reuse
+- encrypted payload storage
+- buyer-side decrypt and verification
+- Solana settlement primitives
+- x402 or mock upstream payment flow
 
 Out of scope for the first MVP:
 
-- private/user-specific data
-- real-time trading-critical feeds
-- full provider marketplace
+- private or user-specific data
+- trading-critical low-latency strategies
+- full provider marketplace economics
 - mainnet production claims
-- mandatory Light Protocol compression for every path
+- mandatory Light Protocol compression on every path
 
-## Why
-
-Agents that ask for the same paid API payload should not force the provider to
-compute and serve the same response repeatedly. The useful saving is not only
-Solana transaction cost; it is provider compute, rate-limit pressure, bandwidth,
-and duplicated x402 payment loops.
-
-## Basic Flow
+## Core Flow
 
 ```
-1. Agent submits a request.
-2. PreDataPool derives the canonical request key.
-3. Cache miss:
-   - fetch once from upstream through x402/API/free mode
-   - hash raw bytes
-   - encrypt payload at rest
-   - build DataEnvelope metadata
-   - register verifiable metadata on Solana
-4. Cache hit:
-   - verify expiry and envelope/hash metadata
-   - authorize buyer before key delivery
-   - return wrapped key + encrypted payload
-   - buyer decrypts and verifies locally
-5. Reuse settlement records provider/fetcher/protocol economics.
+┌─────────────────────────────────────────────────────┐
+│                   AGENT A                           │
+│  1. API'ye istek at (normal yol)                    │
+│  2. SDK hook: veriyi + zarfı pool'a gönder          │
+└────────────────┬────────────────────────────────────┘
+                 │ DataEnvelope (imzali)
+                 ▼
+┌─────────────────────────────────────────────────────┐
+│              PreDataPool Node                       │
+│  - RAM/Redis'te AoI-aware cache                    │
+│  - canonical request key                           │
+│  - encrypted payload at rest                       │
+│  - expiry / signature verification                 │
+│  - Merkle proof doğrulama                          │
+│  - TTL: τ_decay (veri tipine göre)                 │
+│  - Solana'da micro-settlement kaydı                │
+└────────────────┬────────────────────────────────────┘
+                 │ cache hit
+                 ▼
+┌─────────────────────────────────────────────────────┐
+│                   AGENT B                           │
+│  1. Pool'u sorgula (önce bak)                       │
+│  2. Cache hit → doğrula → kullan → ödeme paylaş     │
+│  3. Cache miss → direkt API çek → pool'a bildir     │
+└─────────────────────────────────────────────────────┘
 ```
 
-Future SDK relay must be non-blocking: the agent's fetch response must not wait
-for pool relay completion.
+On a cache miss:
+
+1. The pool computes the canonical request key.
+2. It fetches upstream once through x402, mock payment, or free mode.
+3. It hashes raw bytes, encrypts the payload, and records `DataEnvelope`
+   metadata.
+4. It stores the envelope only while freshness is valid.
+5. It settles reuse metadata for later buyers.
+
+On a cache hit:
+
+1. The node checks expiry and envelope metadata.
+2. The buyer must be authorized before key delivery.
+3. The buyer receives the wrapped key and encrypted payload.
+4. The buyer decrypts locally and verifies the hash/root again.
+
+Future SDK relay must be non-blocking: the agent fetch path must not wait for
+pool relay completion.
 
 ## Important Docs
 
@@ -71,13 +109,14 @@ Key local references:
 ## Project Layout
 
 ```
-anchor/   Solana Anchor programs
-server/   matching server, fetcher, cache, keeper glue
-app/      Next.js frontend
+anchor/   Solana Anchor program
+server/   matcher, fetcher, cache, keeper glue
+app/      Next.js frontend and debug console
 docs/     local external protocol references
 ```
 
 ## Development Note
 
-This repository is still being reduced from a broader prototype into the narrow
-public-data MVP. Treat README claims as product intent, not production readiness.
+This repository is still being reduced from a broader prototype into a narrow
+MVP for M2M, IoT, and edge reuse. Treat README claims as product intent, not
+production readiness.
