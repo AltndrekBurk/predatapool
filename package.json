@@ -1,6 +1,6 @@
 {
   "name": "predatapool-app",
-  "description": "PreDataPool public data reuse MVP frontend",
+  "description": "M2M data reuse layer for IoT and edge workloads",
   "keywords": [
     "predatapool",
     "x402",
