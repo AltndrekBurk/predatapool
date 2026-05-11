@@ -26,6 +26,7 @@ pub fn handle_register_dataset(
     ctx: Context<RegisterDataset>,
     _request_hash: [u8; 32],
     storage_uri: String,
+    key_commitment: [u8; 32],
 ) -> Result<()> {
     require!(
         storage_uri.len() <= DataPool::STORAGE_URI_MAX_LEN,
@@ -34,9 +35,8 @@ pub fn handle_register_dataset(
 
     let pool = &mut ctx.accounts.pool;
 
-    // Persist the storage URI on-chain so any client can resolve where the
-    // payload lives without trusting the keeper's HTTP API.
     pool.storage_uri = storage_uri;
+    pool.key_commitment = key_commitment;
 
     // Re-open pool for post-fetch buyers at decayed price.
     pool.is_open = true;

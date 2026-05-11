@@ -30,6 +30,15 @@ import {
   ReceiptError,
 } from "./batch.js";
 import type { JoinReceipt } from "./receipt.js";
+import {
+  encryptPayload,
+  keyCommitment as deriveKeyCommitment,
+  newPoolKey,
+  wrapPoolKey,
+  WRAPPED_KEY_BYTES,
+  X25519_KEY_BYTES,
+} from "./crypto.js";
+import { ed25519 } from "@noble/curves/ed25519.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -149,19 +158,26 @@ app.post("/request", async (req, res) => {
           const dataHashHex = result.dataHash.toString("hex");
           markFetched(pool.requestHashHex, dataHashHex);
 
-          // Cache the raw payload so subsequent buyers (cache hits) can pull
-          // bytes from us without re-paying upstream. TTL matches the pool's
-          // freshness window — prune sweeps drop expired rows.
+          // Encrypt the payload AT-REST. Server holds K_pool; buyers receive
+          // ECIES-wrapped K_pool from /pool/:hash/key after signing an attestation.
+          // TTL matches the pool's freshness window — prune drops expired rows.
           const fresh = getPool(pool.requestHashHex);
+          let registerKeyCommitment = Buffer.alloc(32, 0);
           if (fresh?.fetchedAt && fresh.expiresAt) {
-            const bodyBuf = Buffer.from(
+            const plaintext = Buffer.from(
               typeof result.data === "string"
                 ? result.data
                 : JSON.stringify(result.data)
             );
+            const k = newPoolKey();
+            const enc = encryptPayload(k, plaintext);
+            registerKeyCommitment = Buffer.from(deriveKeyCommitment(k));
             getStore().putPayload({
               requestHashHex: pool.requestHashHex,
-              body: bodyBuf,
+              ciphertext: Buffer.from(enc.ciphertext),
+              iv: Buffer.from(enc.iv),
+              poolKey: Buffer.from(k),
+              keyCommitment: registerKeyCommitment,
               contentType: "application/json",
               fetchedAt: fresh.fetchedAt,
               expiresAt: fresh.expiresAt,
@@ -182,7 +198,11 @@ app.post("/request", async (req, res) => {
           }
 
           await triggerFetchOnChain(pool.requestHashHex, dataHashHex);
-          await registerDatasetOnChain(pool.requestHashHex, storageUri);
+          await registerDatasetOnChain(
+            pool.requestHashHex,
+            storageUri,
+            registerKeyCommitment
+          );
 
           console.log(
             `[server] Pool ${pool.requestHashHex.slice(0, 8)}... fetched & registered. ` +
@@ -243,9 +263,13 @@ app.get("/pool/:hash/metadata", (req, res) => {
 });
 
 /**
- * Serve cached payload bytes. Buyer pulls from here, hashes locally, verifies
- * against the on-chain `data_hash` before signing a settle receipt — that's
- * the trust-minimization step that keeps the keeper honest.
+ * Serve the encrypted payload. Buyer pulls ciphertext + IV via headers,
+ * obtains K_pool from POST /pool/:hash/key (gated by signed attestation),
+ * decrypts locally with AES-256-GCM, and asserts SHA-256(plaintext) ==
+ * on-chain data_hash before signing a settle receipt.
+ *
+ * Ciphertext is public — without the wrapped K_pool a leaker only gets
+ * encrypted bytes. The only path to plaintext is via the key endpoint.
  */
 app.get("/pool/:hash/payload", (req, res) => {
   const payload = getStore().getPayload(req.params.hash);
@@ -257,13 +281,134 @@ app.get("/pool/:hash/payload", (req, res) => {
     res.status(410).json({ error: "Payload expired" });
     return;
   }
-  res.setHeader("Content-Type", payload.contentType);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("X-DataPool-Plaintext-Type", payload.contentType);
+  res.setHeader("X-DataPool-IV", payload.iv.toString("hex"));
+  res.setHeader(
+    "X-DataPool-Key-Commitment",
+    payload.keyCommitment.toString("hex")
+  );
   res.setHeader("X-DataPool-Fetched-At", String(payload.fetchedAt));
   res.setHeader("X-DataPool-Expires-At", String(payload.expiresAt));
   if (payload.paymentSignature) {
     res.setHeader("X-DataPool-Payment-Signature", payload.paymentSignature);
   }
-  res.status(200).send(payload.body);
+  res.status(200).send(payload.ciphertext);
+});
+
+/**
+ * ECIES key delivery. Buyer proves pool membership with an ed25519
+ * signature over a canonical request, server wraps K_pool to the buyer's
+ * x25519 pubkey, returns wrapped (80 bytes hex).
+ *
+ * Canonical request body:
+ *   buyer:        base58 wallet pubkey
+ *   encPubkey:    32-byte hex x25519 pubkey
+ *   nonce:        unix-ms-ish, prevents replay (server tracks recent nonces)
+ *   signature:    64-byte hex ed25519 sig over keyReqMessage(...)
+ *
+ * Signed message (deterministic):
+ *   "DATAPOOL_KEYREQ_V1" || pool_hash (32B) || encPubkey (32B) || nonce (8B BE)
+ *
+ * Membership check: buyer must be in the off-chain pool buyers list.
+ * (After Photon integration this should also check the on-chain
+ * compressed BuyerSlot — currently TODO.)
+ */
+const KEY_REQ_DOMAIN = "DATAPOOL_KEYREQ_V1";
+const KEY_REQ_DOMAIN_BYTES = new TextEncoder().encode(KEY_REQ_DOMAIN);
+const KEY_REQ_MESSAGE_BYTES = KEY_REQ_DOMAIN_BYTES.length + 32 + 32 + 8;
+
+/** Per-(buyer, pool) recently-seen nonces — replay protection on the server. */
+const seenKeyReqNonces = new Map<string, Set<string>>();
+
+function keyReqMessage(
+  poolHashHex: string,
+  encPubHex: string,
+  nonce: string
+): Uint8Array {
+  const out = new Uint8Array(KEY_REQ_MESSAGE_BYTES);
+  out.set(KEY_REQ_DOMAIN_BYTES, 0);
+  out.set(Buffer.from(poolHashHex, "hex"), KEY_REQ_DOMAIN_BYTES.length);
+  out.set(
+    Buffer.from(encPubHex, "hex"),
+    KEY_REQ_DOMAIN_BYTES.length + 32
+  );
+  // nonce as 8-byte big-endian
+  const nb = BigInt(nonce);
+  for (let i = 0; i < 8; i++) {
+    out[KEY_REQ_DOMAIN_BYTES.length + 64 + i] = Number(
+      (nb >> BigInt((7 - i) * 8)) & 0xffn
+    );
+  }
+  return out;
+}
+
+app.post("/pool/:hash/key", (req, res) => {
+  try {
+    const body = req.body as {
+      buyer: string;
+      encPubkey: string;
+      nonce: string;
+      signature: string;
+    };
+    const poolHashHex = req.params.hash;
+    const pool = getPool(poolHashHex);
+    if (!pool) {
+      res.status(404).json({ error: "Pool not found" });
+      return;
+    }
+    const payload = getStore().getPayload(poolHashHex);
+    if (!payload) {
+      res.status(404).json({ error: "Payload not cached or expired" });
+      return;
+    }
+    if (payload.expiresAt < Date.now()) {
+      res.status(410).json({ error: "Payload expired" });
+      return;
+    }
+    if (!pool.buyers.includes(body.buyer)) {
+      res.status(403).json({ error: "Buyer not a member of this pool" });
+      return;
+    }
+    const encPubBytes = Buffer.from(body.encPubkey, "hex");
+    if (encPubBytes.length !== X25519_KEY_BYTES) {
+      res.status(400).json({ error: "encPubkey must be 32 bytes hex" });
+      return;
+    }
+    const sig = Buffer.from(body.signature, "hex");
+    if (sig.length !== 64) {
+      res.status(400).json({ error: "signature must be 64 bytes hex" });
+      return;
+    }
+    const buyerEd25519 = new PublicKey(body.buyer).toBytes();
+    const msg = keyReqMessage(poolHashHex, body.encPubkey, body.nonce);
+    if (!ed25519.verify(sig, msg, buyerEd25519)) {
+      res.status(403).json({ error: "Invalid signature" });
+      return;
+    }
+    // Replay protection: per-(buyer, pool) nonce-set.
+    const nkey = `${poolHashHex}:${body.buyer}`;
+    let seen = seenKeyReqNonces.get(nkey);
+    if (!seen) {
+      seen = new Set();
+      seenKeyReqNonces.set(nkey, seen);
+    }
+    if (seen.has(body.nonce)) {
+      res.status(409).json({ error: "Nonce already used" });
+      return;
+    }
+    seen.add(body.nonce);
+
+    const wrapped = wrapPoolKey(payload.poolKey, encPubBytes);
+    res.status(200).json({
+      wrappedKey: Buffer.from(wrapped).toString("hex"),
+      wrappedKeyBytes: WRAPPED_KEY_BYTES,
+      keyCommitment: payload.keyCommitment.toString("hex"),
+    });
+  } catch (err) {
+    console.error("[server] /key error:", err);
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.get("/pools", (_req, res) => {

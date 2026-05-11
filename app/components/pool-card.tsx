@@ -8,12 +8,15 @@ import {
   submitRequest,
   formatUsdc,
   getPoolMetadata,
-  fetchAndVerify,
-  DataPoolHashMismatchError,
   type Pool,
   type DataType,
   type PoolMetadata,
 } from "../lib/server-api";
+import {
+  fetchDecryptAndVerify,
+  KeyCommitmentError,
+  DecryptDataHashMismatchError,
+} from "../lib/crypto";
 import { useSignReceipt, toWire } from "../lib/hooks/use-sign-receipt";
 import { useApproveDelegate, DEFAULT_APPROVAL_CAP } from "../lib/hooks/use-approve-delegate";
 import { bytesFromHex, type JoinReceipt } from "../lib/receipt";
@@ -103,25 +106,44 @@ export function PoolCard({ pool, onJoined }: Props) {
   const [verify, setVerify] = useState<VerifyState>({ status: "idle" });
 
   const handleVerify = async () => {
-    if (!metadata?.payloadUrl || !metadata.dataHash) {
+    if (!metadata?.dataHash) {
       toast.error("Pool not yet fetched — nothing to verify");
+      return;
+    }
+    if (!isUserInPool || !address) {
+      toast.error("Join pool first to decrypt and verify");
+      return;
+    }
+    if (!wallet?.signMessage) {
+      toast.error("Wallet does not support message signing");
       return;
     }
     setVerify({ status: "verifying" });
     try {
-      const result = await fetchAndVerify(metadata);
-      setVerify({ status: "ok", bytesLength: result.bytes.length });
-      toast.success("Hash matches on-chain", {
-        description: `${result.bytes.length} bytes verified`,
+      const result = await fetchDecryptAndVerify({
+        poolHashHex: pool.requestHashHex,
+        buyerPubkey: address,
+        dataHash: metadata.dataHash,
+        signMessage: wallet.signMessage.bind(wallet),
+        walletRef: wallet,
+      });
+      setVerify({ status: "ok", bytesLength: result.plaintext.length });
+      toast.success("Decrypted · hash matches on-chain", {
+        description: `${result.plaintext.length} bytes verified`,
       });
     } catch (err) {
-      if (err instanceof DataPoolHashMismatchError) {
+      if (err instanceof KeyCommitmentError) {
+        setVerify({ status: "error", message: err.message });
+        toast.error("Key commitment mismatch — keeper may be lying", {
+          description: err.message,
+        });
+      } else if (err instanceof DecryptDataHashMismatchError) {
         setVerify({
           status: "mismatch",
           expected: err.expected,
           actual: err.actual,
         });
-        toast.error("Hash mismatch — keeper may be lying", {
+        toast.error("Hash mismatch after decrypt", {
           description: `expected ${err.expected.slice(0, 12)}…, got ${err.actual.slice(0, 12)}…`,
         });
       } else {

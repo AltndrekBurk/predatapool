@@ -257,7 +257,10 @@ test("buildPoolMetadata — fetched + fresh pool advertises storageUri and cache
   };
   const payload: PayloadRecord = {
     requestHashHex: pool.requestHashHex,
-    body: Buffer.from('{"x":1}'),
+    ciphertext: Buffer.from('{"x":1}'),
+    iv: Buffer.alloc(12, 0xaa),
+    poolKey: Buffer.alloc(32, 0xbb),
+    keyCommitment: Buffer.alloc(32, 0xcc),
     contentType: "application/json",
     fetchedAt: 2_000,
     expiresAt: 6_000,

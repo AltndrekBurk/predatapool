@@ -39,6 +39,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
     "@solana-program/token": "^0.13.0",
     "@solana/kit": "^6.3.0",
     "@solana/kit-client-rpc": "^0.7.0",

@@ -35,7 +35,14 @@ export interface PoolRecord {
 
 export interface PayloadRecord {
   requestHashHex: string;
-  body: Buffer;
+  /** AES-256-GCM ciphertext (with appended 16-byte tag). */
+  ciphertext: Buffer;
+  /** 12-byte AES-GCM IV. */
+  iv: Buffer;
+  /** 32-byte per-pool symmetric key. Lives server-side only — buyers only see ECIES wraps. */
+  poolKey: Buffer;
+  /** SHA-256("DATAPOOL_K_V1" || poolKey) — published on-chain in register_dataset. */
+  keyCommitment: Buffer;
   contentType: string;
   fetchedAt: number;
   expiresAt: number;
@@ -60,7 +67,10 @@ interface PoolRow {
 
 interface PayloadRow {
   request_hash_hex: string;
-  body: Buffer;
+  ciphertext: Buffer;
+  iv: Buffer;
+  pool_key: Buffer;
+  key_commitment: Buffer;
   content_type: string;
   fetched_at: number;
   expires_at: number;
@@ -88,7 +98,10 @@ CREATE INDEX IF NOT EXISTS pools_status ON pools(status);
 
 CREATE TABLE IF NOT EXISTS payloads (
   request_hash_hex   TEXT PRIMARY KEY,
-  body               BLOB NOT NULL,
+  ciphertext         BLOB NOT NULL,
+  iv                 BLOB NOT NULL,
+  pool_key           BLOB NOT NULL,
+  key_commitment     BLOB NOT NULL,
   content_type       TEXT NOT NULL,
   fetched_at         INTEGER NOT NULL,
   expires_at         INTEGER NOT NULL,
@@ -97,6 +110,13 @@ CREATE TABLE IF NOT EXISTS payloads (
 );
 CREATE INDEX IF NOT EXISTS payloads_expires_at ON payloads(expires_at);
 `;
+
+/**
+ * Schema version. Bump whenever a column shape changes — the constructor
+ * drops & recreates tables on mismatch (cache is rebuilt naturally on next
+ * fetch, no migration step needed because everything off-chain is replaceable).
+ */
+const SCHEMA_VERSION = 2;
 
 function rowToPool(r: PoolRow): PoolRecord {
   return {
@@ -119,7 +139,10 @@ function rowToPool(r: PoolRow): PoolRecord {
 function rowToPayload(r: PayloadRow): PayloadRecord {
   return {
     requestHashHex: r.request_hash_hex,
-    body: r.body,
+    ciphertext: r.ciphertext,
+    iv: r.iv,
+    poolKey: r.pool_key,
+    keyCommitment: r.key_commitment,
     contentType: r.content_type,
     fetchedAt: r.fetched_at,
     expiresAt: r.expires_at,
@@ -137,7 +160,36 @@ export class PoolStore {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.migrateIfNeeded();
     this.db.exec(SCHEMA);
+  }
+
+  /**
+   * On schema-version mismatch, drop the old payloads + pools tables.
+   * Off-chain cache is rebuilt naturally on next fetch — every entry is
+   * replaceable from the upstream — so a hard reset is safer than a
+   * column-shape migration that risks silent type mismatches.
+   */
+  private migrateIfNeeded(): void {
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)"
+    );
+    const row = this.db
+      .prepare("SELECT version FROM schema_meta LIMIT 1")
+      .get() as { version: number } | undefined;
+    if (!row) {
+      this.db
+        .prepare("INSERT INTO schema_meta(version) VALUES (?)")
+        .run(SCHEMA_VERSION);
+      return;
+    }
+    if (row.version !== SCHEMA_VERSION) {
+      this.db.exec("DROP TABLE IF EXISTS payloads");
+      this.db.exec("DROP TABLE IF EXISTS pools");
+      this.db
+        .prepare("UPDATE schema_meta SET version = ?")
+        .run(SCHEMA_VERSION);
+    }
   }
 
   getPool(hashHex: string): PoolRecord | undefined {
@@ -248,10 +300,14 @@ export class PoolStore {
     this.db
       .prepare(
         `INSERT INTO payloads (
-          request_hash_hex, body, content_type, fetched_at, expires_at, payment_signature
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          request_hash_hex, ciphertext, iv, pool_key, key_commitment,
+          content_type, fetched_at, expires_at, payment_signature
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(request_hash_hex) DO UPDATE SET
-          body = excluded.body,
+          ciphertext = excluded.ciphertext,
+          iv = excluded.iv,
+          pool_key = excluded.pool_key,
+          key_commitment = excluded.key_commitment,
           content_type = excluded.content_type,
           fetched_at = excluded.fetched_at,
           expires_at = excluded.expires_at,
@@ -259,7 +315,10 @@ export class PoolStore {
       )
       .run(
         p.requestHashHex,
-        p.body,
+        p.ciphertext,
+        p.iv,
+        p.poolKey,
+        p.keyCommitment,
         p.contentType,
         p.fetchedAt,
         p.expiresAt,

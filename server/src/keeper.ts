@@ -281,19 +281,28 @@ export async function triggerFetchOnChain(
 /**
  * Call register_dataset on-chain.
  * Opens the pool for post-fetch buyers with time-decay pricing.
+ *
+ * `keyCommitment` is the SHA-256 of `"DATAPOOL_K_V1" || K_pool` — published
+ * so any buyer can later assert that the K_pool they unwrapped is the SAME
+ * one bound to this pool (keeper can't deliver a different key per buyer).
  */
 export async function registerDatasetOnChain(
   requestHashHex: string,
-  storageRef: string
+  storageRef: string,
+  keyCommitment: Buffer
 ): Promise<string> {
+  if (keyCommitment.length !== 32) {
+    throw new Error(`keyCommitment must be 32 bytes, got ${keyCommitment.length}`);
+  }
   const program = getProgram();
   const requestHash = Buffer.from(requestHashHex, "hex");
   const requestHashArray = Array.from(requestHash) as unknown as number[];
+  const keyCommitArray = Array.from(keyCommitment) as unknown as number[];
 
   const [poolPda] = derivePoolPda(requestHash);
 
   const tx = await program.methods
-    .registerDataset(requestHashArray as never, storageRef)
+    .registerDataset(requestHashArray as never, storageRef, keyCommitArray as never)
     .accounts({
       pool: poolPda,
       keeper: loadKeeper().publicKey,
@@ -301,7 +310,8 @@ export async function registerDatasetOnChain(
     .rpc();
 
   console.log(
-    `[keeper] register_dataset tx: ${tx} — storage: ${storageRef}`
+    `[keeper] register_dataset tx: ${tx} — storage: ${storageRef}, ` +
+      `key_commitment: ${keyCommitment.toString("hex").slice(0, 16)}...`
   );
   return tx;
 }

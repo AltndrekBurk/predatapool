@@ -84,6 +84,12 @@ pub struct DataPool {
     #[max_len(128)]
     pub storage_uri: String,
 
+    /// SHA-256("DATAPOOL_K_V1" || K_pool) published by the keeper in
+    /// `register_dataset`. Buyers verify the K_pool they unwrap from the
+    /// server against this before decrypting the payload — ensures the keeper
+    /// can't silently deliver different keys to different buyers.
+    pub key_commitment: [u8; 32],
+
     /// Bump for PDA derivation
     pub bump: u8,
 }

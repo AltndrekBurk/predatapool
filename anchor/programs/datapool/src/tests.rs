@@ -26,6 +26,7 @@ mod tests {
             provider_paid: 0,
             pre_fetch_collected: 0,
             storage_uri: String::new(),
+            key_commitment: [0u8; 32],
             bump: 0,
         }
     }
@@ -59,6 +60,7 @@ mod tests {
             provider_paid: 0,
             pre_fetch_collected: 0,
             storage_uri: String::new(),
+            key_commitment: [0u8; 32],
             bump: 0,
         }
     }
