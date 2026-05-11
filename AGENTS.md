@@ -149,117 +149,44 @@ Bir görev tamamlandı sayılır, ancak ve ancak:
 
 ---
 
-## 7. Solana Harici Kaynaklar
+## 7. Harici Dokümantasyon
 
-Kod yazarken aşağıdaki dokümanlara başvur. Şüphe durumunda önce resmi
-kaynağı oku, sonra implement et.
-
-### 7.1 Temel Solana
-
-| Kaynak | URL | Kullanım |
-|---|---|---|
-| Solana Docs (Ana) | https://solana.com/docs | Genel mimari, hesap modeli |
-| Solana Programlama Modeli | https://solana.com/docs/core/accounts | Account, PDA, rent |
-| Program Deploy | https://solana.com/docs/programs/deploying | Devnet deploy adımları |
-| Transaction Anatomy | https://solana.com/docs/core/transactions | İx yapısı, compute budget |
-| Solana Cookbook | https://solanacookbook.com | Pratik kod örnekleri |
-
-### 7.2 Solana Improvement Documents (SIMD)
-
-Protokol seviyesi değişiklikler ve öneriler:
+**Tüm indirilen dokümanlar:** `docs/external/` klasöründe yerel kopya olarak mevcut.
+Tam liste ve açıklamalar için: `docs/external/INDEX.md`
 
 ```
-Repo: https://github.com/solana-foundation/solana-improvement-documents
-Dizin: proposals/
-Format: SIMD-NNNN.md
+docs/external/
+├── simd/        9 dosya  — Solana Improvement Documents
+├── anchor/      9 dosya  — Anchor kısıtlar, hata kodları, Solana core (PDA, CPI, tx)
+├── light-protocol/ 5 dosya — ZK Compression, compressed accounts
+├── x402/        9 dosya  — x402 protokol spec, client-server, facilitator, FAQ
+└── noble/       3 dosya  — AES-GCM, x25519 ECIES, SHA-256/HKDF README'leri
 ```
 
-**Bu projede alakalı SIMD'ler:**
+### Hızlı Referans
 
-| SIMD | Konu | Neden Önemli |
-|---|---|---|
-| SIMD-0083 | Ed25519 native program | `settle_receipt` ix[0]'daki Ed25519 verify |
-| SIMD-0033 | Timely vote credits | AoI (veri tazeliği) ile ilgili zamanlama |
-| SIMD-0096 | Token-2022 extensions | USDC ödeme katmanı gelişimi |
-| SIMD-0045 | On-chain randomness | Gelecekte verifiable delay gerekirse |
-
-SIMD okuma kılavuzu:
-```bash
-# Spesifik bir SIMD'i incele
-curl -s https://raw.githubusercontent.com/solana-foundation/solana-improvement-documents/main/proposals/SIMD-0083.md
-```
-
-### 7.3 Anchor Framework
-
-| Kaynak | URL |
+| İhtiyaç | Yerel Dosya |
 |---|---|
-| Anchor Docs (Ana) | https://www.anchor-lang.com/docs |
-| Anchor Account Constraints | https://www.anchor-lang.com/docs/account-constraints |
-| Anchor Error Codes | https://www.anchor-lang.com/docs/errors |
-| Anchor Rust API | https://docs.rs/anchor-lang/latest/anchor_lang |
-| Anchor Sealevel Tests | https://www.anchor-lang.com/docs/testing |
+| Anchor `constraint =` syntax | `docs/external/anchor/account-constraints.md` |
+| PDA türetme | `docs/external/anchor/solana-pda.md` |
+| CPI nasıl çalışır | `docs/external/anchor/solana-cpi.md` |
+| SPL Token / USDC hesapları | `docs/external/anchor/solana-tokens.md` |
+| Transaction yapısı | `docs/external/anchor/solana-transactions.md` |
+| Light CPI account limiti | `docs/external/simd/0339-increase-cpi-account-info-limit.md` |
+| AoI / timely vote credits | `docs/external/simd/0033-timely-vote-credits.md` |
+| x402 keeper-upstream akışı | `docs/external/x402/client-server.md` |
+| x402 facilitator rolü | `docs/external/x402/facilitator.md` |
+| AES-256-GCM kullanımı | `docs/external/noble/noble-ciphers-README.md` |
+| x25519 ECDH + HKDF | `docs/external/noble/noble-curves-README.md` |
+| CompressedBuyerSlot | `docs/external/light-protocol/compressed-account-README.md` |
 
-**Bu projede kullanılan Anchor özelliğleri:**
-- `#[account]` + `#[derive(InitSpace)]` — DataPool, BuyerSlot
-- `#[max_len(128)]` — `storage_uri` alanı
-- `constraint = ...` — keeper, fetched_at doğrulamaları
-- `seeds = [...]` + `bump` — PDA derivation
-
-### 7.4 Light Protocol (Compressed Accounts)
-
-| Kaynak | URL |
-|---|---|
-| Light Protocol Docs | https://docs.lightprotocol.com |
-| Light SDK (Rust) | https://docs.rs/light-sdk/latest/light_sdk |
-| Photon RPC API | https://docs.helius.dev/photon-api (Helius Photon) |
-| ZK Compression Overview | https://www.zkcompression.com |
-
-**Bu projede nasıl kullanılıyor:**
-- `CompressedBuyerSlot` → Light Protocol state Merkle tree yaprağı
-- `settle_receipt` → `prepareSettleReceiptCpi` (server/src/light.ts) ile CPI
-- Photon RPC → validity proof + address tree bilgisi (off-chain)
-- Maliyet avantajı: ~0.002 SOL/slot → ~0 SOL (sadece leaf hash)
-
-### 7.5 x402 / MPP Ödeme Protokolü
-
-| Kaynak | URL |
-|---|---|
-| x402 Spec | https://x402.org |
-| @solana/mpp | https://www.npmjs.com/package/@solana/mpp |
-| HTTP 402 RFC | https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402 |
-
-**Bu projede nasıl kullanılıyor:**
-- `server/src/fetcher.ts` → `solana.charge({ signer, rpcUrl })` — keeper upstream'e öder
-- `server/src/mock-upstream.ts` → 402 döndüren test server
-- `server/src/smoke-x402.ts` → entegrasyon smoke testi
-
-### 7.6 Kriptografi Kütüphaneleri
-
-| Kütüphane | Kaynak | Bu Projede |
-|---|---|---|
-| @noble/ciphers | https://paulmillr.com/noble | AES-256-GCM şifreleme |
-| @noble/curves | https://paulmillr.com/noble | x25519 ECIES, ed25519 |
-| @noble/hashes | https://paulmillr.com/noble | SHA-256, HKDF |
-| Noble genel güvenlik | https://github.com/paulmillr/noble-ciphers#security | Audit durumu |
-
-**Kritik:** Noble kütüphaneleri audit edilmiştir; başka bir kriptografi
-kütüphanesi ekleme — önce güvenlik denetimine bak.
-
-### 7.7 SPL Token (USDC)
-
-| Kaynak | URL |
-|---|---|
-| SPL Token Docs | https://spl.solana.com/token |
-| Associated Token Account | https://spl.solana.com/associated-token-account |
-| Token Program (Rust) | https://docs.rs/spl-token/latest/spl_token |
-
-### 7.8 Solana Kit (@solana/kit)
-
-| Kaynak | URL |
-|---|---|
-| @solana/kit Repo | https://github.com/anza-xyz/kit |
-| TransactionSigner | https://github.com/anza-xyz/kit/blob/main/packages/signers |
-| RPC Types | https://github.com/anza-xyz/kit/blob/main/packages/rpc-types |
+### Kaynak URL'leri (güncel versiyon için)
+- Solana Docs: https://solana.com/docs
+- SIMD Repo: https://github.com/solana-foundation/solana-improvement-documents
+- Anchor Docs: https://www.anchor-lang.com/docs
+- Light Protocol: https://docs.lightprotocol.com
+- x402: https://x402.org / https://github.com/coinbase/x402
+- @noble: https://github.com/paulmillr/noble-ciphers
 
 ---
 

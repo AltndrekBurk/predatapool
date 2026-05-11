@@ -7,11 +7,13 @@
 
 ## 1. Projenin Özü
 
-**PreDataPool**, birden fazla yapay zeka ajanının aynı API verisini tek seferinde çekip maliyeti paylaşmasını sağlayan bir Solana L2-tarzı protokoldür.
+**PreDataPool**, birden fazla yapay zeka ajanının/yada farklı makinelerin iotlerin  aynı API verisini tek seferinde çekip maliyeti paylaşmasını sağlayan bir Solana L2-tarzı protokoldür.
 
 ### Temel Sorun
 
 ```
+cloud-flaerin off-chain yaptığı veri tasarrufu gibi ama onchain hali bu mpp-x402-makine ödemeleri-iot lere özel özelleşmiş olrusa daha iyi olur .
+iot/edge computig kategorisnde.
 Agent A → API → $0.10 öder → veriyi kullanır
 Agent B → API → $0.10 öder → AYNI veriyi kullanır   ← gereksiz çift ödeme
 ```
@@ -29,7 +31,8 @@ Agent B → PreDataPool matcher → cache hit        → $0.10 / N buyer
 - **Buyer-side time-decay:** Veri eskidikçe fiyat düşer (AoI — Age of Information)  
 - **Provider gelir payı:** Provider, her erişimde `provider_share_bps` oranında USDC alır  
 - **Sponsor rebate:** Fetch'i tetikleyen erken alıcılar, post-fetch gelirden geri ödeme alır  
-- **x402 ödeme döngüsü:** Keeper upstream API'ye `@solana/mpp` ile ödeme yapar
+- **x402 ödeme döngüsü:** Keeper upstream API'ye `@solana/mpp` ile ödeme yapar gelecekte bu solandaki ligh protocol ile ödemeler birleştirilebir verimlilik iiçin.
+- **ekonkmik tasarrufu** provider zrar uğratılmaz aksine tasaruf edilen hesaplama malieyeti paylaşır hereks kaznaçlı olur.darboğaz azalır.öleklenme artar.
 
 ---
 
@@ -42,7 +45,7 @@ Agent B → PreDataPool matcher → cache hit        → $0.10 / N buyer
 | Sıkıştırma | Light Protocol (compressed BuyerSlot) |
 | Ödeme | x402 / `@solana/mpp` |
 | Server | Node.js + Express + TypeScript |
-| Cache | SQLite (`better-sqlite3`) |
+| Cache | SQLite (`better-sqlite3`)-UYGUN GÖRÜRSEN hız önemli tabikİ |
 | Şifreleme | AES-256-GCM + ECIES x25519 (`@noble/*`) |
 | Frontend | Next.js 16 + React 19 + Tailwind v4 |
 | Solana Client | `@solana/kit`, `@coral-xyz/anchor` |
