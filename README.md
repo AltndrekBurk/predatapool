@@ -115,6 +115,48 @@ app/      Next.js frontend and debug console
 docs/     local external protocol references
 ```
 
+## Architecture: On-Chain Accounts vs. Off-Chain Efficiency
+
+### One PDA per data request, not per buyer
+
+A Pool PDA is keyed by `hash(endpoint + params + freshnessWindow)`. Six agents
+requesting Istanbul weather open **one** on-chain account, not six. The same
+PDA is reused across every future request for that endpoint until it expires.
+
+### Buyer joins are fully off-chain
+
+Buyers never submit individual transactions. Each buyer signs an ed25519
+receipt locally. The keeper accumulates receipts and settles them in a single
+`settle_batch` transaction — N buyers, 1 on-chain tx.
+
+```
+buyer-1  →  signed receipt (off-chain)  ─┐
+buyer-2  →  signed receipt (off-chain)  ─┤──▶  settle_batch tx  (1 tx total)
+buyer-N  →  signed receipt (off-chain)  ─┘
+```
+
+### The on-chain account is a trust anchor, not a payment rail
+
+The Pool PDA stores:
+- `data_hash` — SHA-256 of the fetched payload (tamper-proof)
+- `key_commitment` — hash of the AES encryption key (verifiable)
+- `storage_uri` — where buyers fetch the payload (no server trust needed)
+
+Without this anchor the system degrades to "trust the server". The account is
+the only part that requires chain state.
+
+### Known limitations in the current MVP
+
+| Issue | Impact | Fix |
+|---|---|---|
+| `initialize_pool` is eager | Opens an account on the first request, before threshold is confirmed | Make it lazy — initialize only when fetch is triggered |
+| No Light Protocol compression yet | Each pool account costs ~0.002 SOL rent | Compressed accounts reduce this to ~0.000003 SOL (600×) |
+| `settle_batch` not wired end-to-end | Off-chain receipt accumulation exists in `batch.ts` / `receipt.ts` but settlement loop is not complete | Wire keeper drain loop to `settle_receipt` instruction |
+
+The core efficiency claim — one upstream fetch shared across N buyers — is
+implemented and demonstrated. The on-chain overhead per pool is a known
+cost to be compressed via Light Protocol in the next milestone.
+
 ## Development Note
 
 This repository is still being reduced from a broader prototype into a narrow
