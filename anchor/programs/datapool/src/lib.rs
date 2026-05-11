@@ -10,7 +10,7 @@ pub mod receipt;
 pub mod state;
 
 use instructions::*;
-use state::{BuyerSlot, DataPool};
+use state::DataPool;
 
 declare_id!("62pKxmwZxC7SA4TSYW7FYAxewRU6UXKT2bh7xC55Kg4D");
 
@@ -75,6 +75,10 @@ pub mod datapool {
         pool.pre_fetch_collected = 0;
         pool.storage_uri = String::new();
         pool.key_commitment = [0u8; 32];
+        pool.source_hash = [0u8; 32];
+        pool.expires_at_ms = 0;
+        pool.merkle_root = [0u8; 32];
+        pool.keeper_signature = [0u8; 64];
         pool.bump = ctx.bumps.pool;
 
         msg!(
@@ -107,8 +111,21 @@ pub mod datapool {
         request_hash: [u8; 32],
         storage_uri: String,
         key_commitment: [u8; 32],
+        source_hash: [u8; 32],
+        expires_at_ms: i64,
+        merkle_root: [u8; 32],
+        keeper_signature: [u8; 64],
     ) -> Result<()> {
-        instructions::handle_register_dataset(ctx, request_hash, storage_uri, key_commitment)
+        instructions::handle_register_dataset(
+            ctx,
+            request_hash,
+            storage_uri,
+            key_commitment,
+            source_hash,
+            expires_at_ms,
+            merkle_root,
+            keeper_signature,
+        )
     }
 
     /// Early sponsor claims retroactive rebate from post-fetch buyer revenue.

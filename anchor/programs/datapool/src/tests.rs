@@ -27,6 +27,10 @@ mod tests {
             pre_fetch_collected: 0,
             storage_uri: String::new(),
             key_commitment: [0u8; 32],
+            source_hash: [0u8; 32],
+            expires_at_ms: 0,
+            merkle_root: [0u8; 32],
+            keeper_signature: [0u8; 64],
             bump: 0,
         }
     }
@@ -61,6 +65,10 @@ mod tests {
             pre_fetch_collected: 0,
             storage_uri: String::new(),
             key_commitment: [0u8; 32],
+            source_hash: [0u8; 32],
+            expires_at_ms: 0,
+            merkle_root: [0u8; 32],
+            keeper_signature: [0u8; 64],
             bump: 0,
         }
     }

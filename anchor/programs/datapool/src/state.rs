@@ -90,6 +90,22 @@ pub struct DataPool {
     /// can't silently deliver different keys to different buyers.
     pub key_commitment: [u8; 32],
 
+    /// SHA-256(source_url). The raw source URL stays off-chain so user-facing
+    /// metadata can evolve without reallocating this account.
+    pub source_hash: [u8; 32],
+
+    /// Unix millisecond expiry for the cached envelope. Buyers must reject
+    /// payloads after this point even if the payload endpoint still responds.
+    pub expires_at_ms: i64,
+
+    /// DataEnvelope v0 root:
+    /// SHA256(payload || source_url || fetched_at_ms || expires_at_ms).
+    pub merkle_root: [u8; 32],
+
+    /// Keeper Ed25519 signature over `merkle_root`. This is not a provider
+    /// signature; it proves which keeper registered the envelope.
+    pub keeper_signature: [u8; 64],
+
     /// Bump for PDA derivation
     pub bump: u8,
 }

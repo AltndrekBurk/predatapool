@@ -18,6 +18,8 @@ import type { UpstreamPayment } from "./providers.js";
 
 export interface FetchResult {
   data: unknown;
+  rawBody: Buffer;
+  contentType: string;
   dataHash: Buffer; // SHA-256 of raw response body
   fetchedAt: number;
   source: string;
@@ -146,6 +148,8 @@ export async function fetchData(
 
   return {
     data,
+    rawBody: Buffer.from(raw),
+    contentType,
     dataHash,
     fetchedAt: Date.now(),
     source: endpoint,

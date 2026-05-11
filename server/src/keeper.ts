@@ -38,7 +38,7 @@ const PROGRAM_ID = new PublicKey(
 const RPC_URL =
   process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
 
-function loadKeeper(): Keypair {
+export function loadKeeper(): Keypair {
   const keypairPath =
     process.env.KEEPER_KEYPAIR_PATH ?? `${process.env.HOME}/.config/solana/id.json`;
   const raw = JSON.parse(readFileSync(keypairPath, "utf-8"));
@@ -289,20 +289,50 @@ export async function triggerFetchOnChain(
 export async function registerDatasetOnChain(
   requestHashHex: string,
   storageRef: string,
-  keyCommitment: Buffer
+  keyCommitment: Buffer,
+  envelope: {
+    sourceHash: Buffer;
+    expiresAt: number;
+    merkleRoot: Buffer;
+    keeperSignature: Buffer;
+  }
 ): Promise<string> {
   if (keyCommitment.length !== 32) {
     throw new Error(`keyCommitment must be 32 bytes, got ${keyCommitment.length}`);
+  }
+  if (envelope.sourceHash.length !== 32) {
+    throw new Error(`sourceHash must be 32 bytes, got ${envelope.sourceHash.length}`);
+  }
+  if (envelope.merkleRoot.length !== 32) {
+    throw new Error(`merkleRoot must be 32 bytes, got ${envelope.merkleRoot.length}`);
+  }
+  if (envelope.keeperSignature.length !== 64) {
+    throw new Error(
+      `keeperSignature must be 64 bytes, got ${envelope.keeperSignature.length}`
+    );
   }
   const program = getProgram();
   const requestHash = Buffer.from(requestHashHex, "hex");
   const requestHashArray = Array.from(requestHash) as unknown as number[];
   const keyCommitArray = Array.from(keyCommitment) as unknown as number[];
+  const sourceHashArray = Array.from(envelope.sourceHash) as unknown as number[];
+  const merkleRootArray = Array.from(envelope.merkleRoot) as unknown as number[];
+  const keeperSignatureArray = Array.from(
+    envelope.keeperSignature
+  ) as unknown as number[];
 
   const [poolPda] = derivePoolPda(requestHash);
 
   const tx = await program.methods
-    .registerDataset(requestHashArray as never, storageRef, keyCommitArray as never)
+    .registerDataset(
+      requestHashArray as never,
+      storageRef,
+      keyCommitArray as never,
+      sourceHashArray as never,
+      new BN(envelope.expiresAt.toString()),
+      merkleRootArray as never,
+      keeperSignatureArray as never
+    )
     .accounts({
       pool: poolPda,
       keeper: loadKeeper().publicKey,
@@ -311,7 +341,8 @@ export async function registerDatasetOnChain(
 
   console.log(
     `[keeper] register_dataset tx: ${tx} — storage: ${storageRef}, ` +
-      `key_commitment: ${keyCommitment.toString("hex").slice(0, 16)}...`
+      `key_commitment: ${keyCommitment.toString("hex").slice(0, 16)}..., ` +
+      `merkle_root: ${envelope.merkleRoot.toString("hex").slice(0, 16)}...`
   );
   return tx;
 }

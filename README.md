@@ -1,166 +1,83 @@
-# nextjs-anchor
+# PreDataPool
 
-Next.js starter with Tailwind CSS, `@solana/kit`, and an Anchor vault program example.
+PreDataPool is an MVP protocol for public API data sharing between agents:
+one canonical request, one upstream fetch/payment, encrypted cache reuse, and
+buyer-side verification.
 
-## Getting Started
+## Current Scope
 
-```shell
-npx -y create-solana-dapp@latest -t solana-foundation/templates/kit/nextjs-anchor
-```
+The first target is deliberately narrow:
 
-```shell
-npm install
-npm run setup   # Builds the Anchor program and generates the TypeScript client
-npm run dev
-```
+- public, shareable API data
+- x402/mock upstream payment flow
+- canonical request deduplication
+- AoI/freshness-window cache reuse
+- AES-GCM encrypted payload storage
+- buyer-side decrypt and SHA-256 verification
+- Solana devnet settlement primitives
 
-Open [http://localhost:3000](http://localhost:3000), connect your wallet, and interact with the vault.
+Out of scope for the first MVP:
 
-## What's Included
+- private/user-specific data
+- real-time trading-critical feeds
+- full provider marketplace
+- mainnet production claims
+- mandatory Light Protocol compression for every path
 
-- **Wallet connection** via wallet-standard with auto-discovery and dropdown UI
-- **Cluster switching** — devnet, testnet, mainnet, and localnet from the header
-- **Wallet balance** display with airdrop button (devnet/testnet/localnet)
-- **SOL Vault program** — deposit and withdraw SOL from a personal PDA vault
-- **Toast notifications** with explorer links for every transaction
-- **Error handling** — human-readable messages for common Solana and program errors
-- **Codama-generated client** — type-safe program interactions using `@solana/kit`
-- **Tailwind CSS v4** with light/dark mode toggle
+## Why
 
-## Stack
+Agents that ask for the same paid API payload should not force the provider to
+compute and serve the same response repeatedly. The useful saving is not only
+Solana transaction cost; it is provider compute, rate-limit pressure, bandwidth,
+and duplicated x402 payment loops.
 
-| Layer          | Technology                       |
-| -------------- | -------------------------------- |
-| Frontend       | Next.js 16, React 19, TypeScript |
-| Styling        | Tailwind CSS v4                  |
-| Solana Client  | `@solana/kit`, wallet-standard   |
-| Program Client | Codama-generated, `@solana/kit`  |
-| Program        | Anchor (Rust)                    |
-
-## Project Structure
+## Basic Flow
 
 ```
-├── app/
-│   ├── components/
-│   │   ├── cluster-context.tsx  # Cluster state (React context + localStorage)
-│   │   ├── cluster-select.tsx   # Cluster switcher dropdown
-│   │   ├── grid-background.tsx  # Solana-branded decorative grid
-│   │   ├── providers.tsx        # Wallet + theme providers
-│   │   ├── theme-toggle.tsx     # Light/dark mode toggle
-│   │   ├── vault-card.tsx       # Vault deposit/withdraw UI
-│   │   └── wallet-button.tsx    # Wallet connect/disconnect dropdown
-│   ├── generated/vault/        # Codama-generated program client
-│   ├── lib/
-│   │   ├── wallet/             # Wallet-standard connection layer
-│   │   │   ├── types.ts        # Wallet types
-│   │   │   ├── standard.ts     # Wallet discovery + session creation
-│   │   │   ├── signer.ts       # WalletSession → TransactionSigner
-│   │   │   └── context.tsx     # WalletProvider + useWallet() hook
-│   │   ├── hooks/
-│   │   │   ├── use-balance.ts  # SWR-based balance fetching
-│   │   │   └── use-send-transaction.ts  # Transaction send with loading state
-│   │   ├── cluster.ts          # Cluster endpoints + RPC factory
-│   │   ├── lamports.ts         # SOL/lamports conversion
-│   │   ├── send-transaction.ts # Transaction build + sign + send pipeline
-│   │   ├── errors.ts           # Transaction error parsing
-│   │   └── explorer.ts         # Explorer URL builder + address helpers
-│   └── page.tsx                # Main page
-├── anchor/                     # Anchor workspace
-│   └── programs/vault/         # Vault program (Rust)
-└── codama.json                 # Codama client generation config
+1. Agent submits a request.
+2. PreDataPool derives the canonical request key.
+3. Cache miss:
+   - fetch once from upstream through x402/API/free mode
+   - hash raw bytes
+   - encrypt payload at rest
+   - build DataEnvelope metadata
+   - register verifiable metadata on Solana
+4. Cache hit:
+   - verify expiry and envelope/hash metadata
+   - authorize buyer before key delivery
+   - return wrapped key + encrypted payload
+   - buyer decrypts and verifies locally
+5. Reuse settlement records provider/fetcher/protocol economics.
 ```
 
-## Local Development
+Future SDK relay must be non-blocking: the agent's fetch response must not wait
+for pool relay completion.
 
-To test against a local validator instead of devnet:
+## Important Docs
 
-1. **Start a local validator**
+Development agents must read `AGENTS.md` and `CODEX_GUIDE.md` first.
+Protocol assumptions must be checked against local docs in `docs/external/`.
 
-   ```bash
-   solana-test-validator
-   ```
+Key local references:
 
-2. **Deploy the program locally**
+- `docs/external/x402/client-server.md`
+- `docs/external/x402/facilitator.md`
+- `docs/external/anchor/solana-pda.md`
+- `docs/external/anchor/account-constraints.md`
+- `docs/external/noble/noble-ciphers-README.md`
+- `docs/external/noble/noble-curves-README.md`
+- `docs/external/light-protocol/*`
 
-   ```bash
-   solana config set --url localhost
-   cd anchor
-   anchor build
-   anchor deploy
-   cd ..
-   npm run codama:js   # Regenerate client with local program ID
-   ```
+## Project Layout
 
-3. **Switch to localnet** in the app using the cluster selector in the header.
-
-## Deploy Your Own Vault
-
-The included vault program is already deployed to devnet. To deploy your own:
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/)
-- [Solana CLI](https://solana.com/docs/intro/installation)
-- [Anchor](https://www.anchor-lang.com/docs/installation)
-
-### Steps
-
-1. **Configure Solana CLI for devnet**
-
-   ```bash
-   solana config set --url devnet
-   ```
-
-2. **Create a wallet (if needed) and fund it**
-
-   ```bash
-   solana-keygen new
-   solana airdrop 2
-   ```
-
-3. **Build and deploy the program**
-
-   ```bash
-   cd anchor
-   anchor build
-   anchor keys sync    # Updates program ID in source
-   anchor build        # Rebuild with new ID
-   anchor deploy
-   cd ..
-   ```
-
-4. **Regenerate the client and restart**
-   ```bash
-   npm run setup   # Rebuilds program and regenerates client
-   npm run dev
-   ```
-
-## Testing
-
-Tests use [LiteSVM](https://github.com/LiteSVM/litesvm), a fast lightweight Solana VM for testing.
-
-```bash
-npm run anchor-build   # Build the program first
-npm run anchor-test    # Run tests
+```
+anchor/   Solana Anchor programs
+server/   matching server, fetcher, cache, keeper glue
+app/      Next.js frontend
+docs/     local external protocol references
 ```
 
-The tests are in `anchor/programs/vault/src/tests.rs` and automatically use the program ID from `declare_id!`.
+## Development Note
 
-## Regenerating the Client
-
-If you modify the program, regenerate the TypeScript client:
-
-```bash
-npm run setup   # Or: npm run anchor-build && npm run codama:js
-```
-
-This uses [Codama](https://github.com/codama-idl/codama) to generate a type-safe client from the Anchor IDL.
-
-## Learn More
-
-- [Solana Docs](https://solana.com/docs) — core concepts and guides
-- [Anchor Docs](https://www.anchor-lang.com/docs/introduction) — program development framework
-- [Deploying Programs](https://solana.com/docs/programs/deploying) — deployment guide
-- [@solana/kit](https://github.com/anza-xyz/kit) — Solana JavaScript SDK
-- [Codama](https://github.com/codama-idl/codama) — client generation from IDL
-# datapool-protocol
+This repository is still being reduced from a broader prototype into the narrow
+public-data MVP. Treat README claims as product intent, not production readiness.

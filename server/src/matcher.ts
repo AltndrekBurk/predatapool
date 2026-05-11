@@ -175,6 +175,7 @@ export function joinPool(request: DataRequest): {
       method: request.method.trim().toUpperCase(),
       freshnessWindowSecs: request.freshnessWindowSecs,
       buyers: [],
+      authorizedBuyers: [],
       createdAt: now,
       status: "pending",
       minBuyers: request.minBuyers ?? DEFAULT_MIN_BUYERS,
@@ -247,7 +248,7 @@ export function getAllPools(): PoolRecord[] {
  * names without bumping the `v` discriminator and updating SDK consumers.
  */
 export interface PoolMetadata {
-  v: 1;
+  v: 2;
   poolHash: string;
   status: PoolStatus;
   cacheHit: boolean;
@@ -263,6 +264,14 @@ export interface PoolMetadata {
   dataHash?: string;
   storageUri?: string;
   payloadUrl?: string;
+  envelope?: {
+    version: 0;
+    sourceUrl: string;
+    sourceHash: string;
+    merkleRoot: string;
+    keeperPubkey: string;
+    keeperSignature: string;
+  };
   paymentSignature?: string;
 }
 
@@ -287,7 +296,7 @@ export function buildPoolMetadata(
     ? `${baseUrl}/pool/${pool.requestHashHex}/payload`
     : undefined;
   return {
-    v: 1,
+    v: 2,
     poolHash: pool.requestHashHex,
     status: pool.status,
     cacheHit: isFresh,
@@ -306,6 +315,16 @@ export function buildPoolMetadata(
         ? `${baseUrl}/pool/${pool.requestHashHex}/payload`
         : undefined,
     payloadUrl,
+    envelope: payload
+      ? {
+          version: 0,
+          sourceUrl: payload.sourceUrl,
+          sourceHash: payload.sourceHash.toString("hex"),
+          merkleRoot: payload.merkleRoot.toString("hex"),
+          keeperPubkey: payload.keeperPubkey.toString("hex"),
+          keeperSignature: payload.keeperSignature.toString("hex"),
+        }
+      : undefined,
     paymentSignature: payload?.paymentSignature,
   };
 }

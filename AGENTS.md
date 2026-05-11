@@ -1,218 +1,279 @@
-# AGENTS.md — PreDataPool
+# AGENTS.md — PreDataPool Development Guide
 
-> Codex ve tüm kodlama ajanları için değişmez kurallar ve proje rehberi.
-> Bu dosya her session'da otomatik okunur. Kısaltma: yok. Kural: bağlayıcı.
+This file governs Codex and any AI coding agent working on this repository.
+Read it before touching code, config, tests, or documentation.
 
----
+## 0. Prime Directive
 
-## 1. Proje Özeti
+Never assume. Never guess. Never fabricate.
 
-**PreDataPool** — birden fazla AI ajanının aynı API verisini tek seferinde
-çekip maliyeti (hem veri hem Solana işlem ücreti) paylaştığı bir protokol.
+If any of these are uncertain, stop and ask:
 
-- Solana devnet / Anchor 0.32.1
-- Off-chain: Node.js matching server + SQLite cache + AES-GCM at-rest encryption
-- On-chain: DataPool PDA, CompressedBuyerSlot (Light Protocol), x402 ödeme
-- Frontend: Next.js 16 + React 19 + Tailwind v4
+- x402, MCP, Solana runtime, Anchor, or Light Protocol behavior
+- account layouts or data schemas
+- cryptographic primitive usage
+- on-chain settlement or revenue logic
+- provider permission / opt-in rules
+- whether a data source is public and pool-eligible
 
-**Detaylı bağlam için:** `CODEX_GUIDE.md` — tüm mimari, endpoint'ler,
-şifreleme protokolü, tamamlanan vs eksik özellikler.
+Uncertainty is acceptable. Proceeding despite uncertainty is not.
 
----
+## 1. Current Repository Shape
 
-## 2. Dizin Haritası
+The user may describe the target architecture as `/sdk`, `/node`, and
+`/programs/predatapool`. That is the desired direction, not the current tree.
 
-```
-predatapool/
-├── AGENTS.md              ← bu dosya — değişmez kurallar
-├── CODEX_GUIDE.md         ← tam proje rehberi
-├── anchor/                ← Rust/Anchor on-chain programı
-│   └── programs/datapool/src/
-│       ├── lib.rs         ← instruction dispatch
-│       ├── state.rs       ← DataPool, BuyerSlot, CompressedBuyerSlot
-│       └── instructions/  ← her instruction ayrı dosya
-├── server/src/            ← off-chain keeper + HTTP API
-│   ├── index.ts           ← Express HTTP server
-│   ├── crypto.ts          ← AES-GCM + ECIES şifreleme
-│   ├── store.ts           ← SQLite PoolStore
-│   ├── keeper.ts          ← Anchor program çağrıları
-│   ├── matcher.ts         ← pool oluşturma / birleştirme
-│   └── providers.ts       ← provider kayıt defteri
-└── app/                   ← Next.js frontend
-    ├── lib/crypto.ts      ← buyer-side şifre çözme
-    ├── lib/server-api.ts  ← HTTP client SDK
-    └── components/        ← UI bileşenleri
-```
+Current paths:
 
----
+| Component | Current Location | Notes |
+|---|---|---|
+| Frontend / read client | `app/` | Next.js, wallet UI, buyer decrypt/verify helpers |
+| Pool server / keeper | `server/` | Express, matcher, fetcher, SQLite store |
+| On-chain program | `anchor/programs/datapool` | Anchor/Rust |
+| Local references | `docs/external/` | Must be read before protocol decisions |
 
-## 3. Build ve Test Komutları
+Do not invent missing folders or rewrite the repo layout unless explicitly asked.
 
-### TypeScript (frontend + server)
-```bash
-npx tsc --noEmit                          # type check — her değişiklik sonrası çalıştır
-npm run dev                               # Next.js dev server (port 3000)
-```
+## 2. What This Project Is
 
-### Server
-```bash
-cd server && npm run dev                  # matching server (port 3001)
-cd server && npm run mock-upstream        # x402/MPP test upstream (port 4001)
-cd server && npx tsx --test src/crypto.test.ts   # crypto testleri (10 test)
-cd server && npx tsx --test src/store.test.ts    # store testleri (6 test)
-cd server && npx tsx src/smoke-x402.ts    # x402 entegrasyon (mock-upstream gerekli)
-```
+PreDataPool is a Solana-native public data reuse layer for machine-to-machine
+payments. It groups identical or overlapping requests from AI agents, IoT
+devices, vehicles, and edge devices; performs one verified fetch when possible;
+serves encrypted reuse; and records paid reuse on Solana.
 
-### Anchor (Rust)
-```bash
-# PATH ayarı — Solana CLI ve Cargo ikisi de gerekli
-export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+MVP scope:
 
-cd anchor && anchor build                 # Rust derle + IDL üret
-cd anchor && anchor test --skip-deploy    # unit testler (LiteSVM)
-cd anchor && anchor deploy                # devnet'e deploy
-```
+- public/shareable data only
+- canonical request deduplication
+- one upstream fetch/payment per fresh pool
+- encrypted at-rest payload cache
+- buyer-side decrypt + SHA-256 verification
+- x402/mock upstream demo
+- Solana devnet settlement primitives
 
-### Codama (TypeScript client üretimi)
-```bash
-npm run codama:js    # anchor build sonrası çalıştır
-```
+Out of scope for MVP:
 
----
+- private/user-specific data
+- generic provider marketplace
+- mainnet production claims
+- full Redis migration
+- mandatory Light Protocol on every path
+- every possible data category
 
-## 4. Değişmez Kurallar
+## 3. Core Concepts
 
-### 4.1 Güvenlik
+### DataEnvelope
 
-- **ASLA** plaintext payload'ı SQLite'a yazma — her zaman AES-256-GCM şifreli kaydet
-- **ASLA** `K_pool`'u HTTP response'ta düz metin döndürme — sadece ECIES wrap
-- **ASLA** `key_commitment` ve `data_hash` doğrulamasını atlatma
-- `seenKeyReqNonces` — nonce replay check her `/pool/:hash/key` isteğinde zorunlu
-- SQL parametrelerini her zaman parametreli sorgularla geç (better-sqlite3 `?` bind)
-- XSS: kullanıcıdan gelen veriyi DOM'a `innerHTML` ile ekleme
-- Keeper keypair yolunu asla hardcode etme — `KEEPER_KEYPAIR_PATH` env kullan
+Target signed data unit:
 
-### 4.2 Anchor / Rust
-
-- `DataPool::STORAGE_URI_MAX_LEN = 128` — bu sabit on-chain ve server'da eşit olmalı
-- `SCHEMA_VERSION` (`store.ts`) — her `PayloadRecord` şema değişikliğinde artır
-- `state.rs`'e yeni alan eklendiğinde `initialize_pool`'da o alanı sıfırla
-- `tests.rs`'deki `DataPool` struct literal'larına yeni alan eklendiğinde güncelle
-- Anchor build her zaman `anchor/` dizininden çalıştırılır, repo kökünden değil
-- IDL değişikliği → `npm run codama:js` zorunlu
-
-### 4.3 Kod Kalitesi
-
-- Yorum yaz: **sadece** neden (why) açıksa — ne (what) yazan yorum yazma
-- `any` kullanma — tip güvenli kod yaz; zorunluysa `as never` (mevcut pattern)
-- Hata mesajlarını kullanıcıya dönük yap — `String(err)` değil `(err as Error).message`
-- Test ekle: her yeni kripto fonksiyonu için en az round-trip + tamper testi
-- `npx tsc --noEmit` sıfır hata verene kadar commit etme
-
-### 4.4 Mimari
-
-- HTTP endpoint eklersen `CODEX_GUIDE.md` Bölüm 5'i güncelle
-- Rust instruction eklenirse `CODEX_GUIDE.md` Bölüm 4'ü güncelle
-- `providers.ts` statik kayıt defteri — production'da on-chain hesap olmalı (TODO)
-- `seenKeyReqNonces` in-memory — server restart'ta sıfırlanır; bunu bilerek kullan
-
-### 4.5 Git
-
-- Commit mesajı formatı: `type(scope): açıklama`
-  - `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
-  - Örnek: `feat(anchor): register_dataset key_commitment argümanı`
-- Her Anchor değişikliği → rebuild → IDL commit'e dahil et
-- `anchor/target/` `.gitignore`'da değilse binary'leri commit etme
-
----
-
-## 5. "Tamamlandı" Kriterleri
-
-Bir görev tamamlandı sayılır, ancak ve ancak:
-
-1. `npx tsc --noEmit` — sıfır hata
-2. İlgili testler çalışır ve geçer (`crypto.test.ts`, `store.test.ts`, vs.)
-3. Anchor değişikliği varsa → `anchor build` başarılı, IDL güncellendi
-4. Yeni endpoint/instruction → `CODEX_GUIDE.md` güncellendi
-5. Güvenlik kuralları ihlali yok (yukarıdaki 4.1 listesi)
-
----
-
-## 6. Kritik Eksikler (Sıradaki Görevler)
-
-Şu an en yüksek öncelikli eksikler (`CODEX_GUIDE.md` Bölüm 11'de detay):
-
-1. **DataEnvelope + provider imzası** — keeper dürüst varsayımı kırılabilmeli
-2. **Agent SDK paketi** — `@predatapool/sdk` npm paketi
-3. **WeatherXM gerçek entegrasyon** — API key ile gerçek test
-4. **Privacy / opt-out** — hassas veri havuz dışı kalabilmeli
-
----
-
-## 7. Harici Dokümantasyon
-
-**Tüm indirilen dokümanlar:** `docs/external/` klasöründe yerel kopya olarak mevcut.
-Tam liste ve açıklamalar için: `docs/external/INDEX.md`
-
-```
-docs/external/
-├── simd/        9 dosya  — Solana Improvement Documents
-├── anchor/      9 dosya  — Anchor kısıtlar, hata kodları, Solana core (PDA, CPI, tx)
-├── light-protocol/ 5 dosya — ZK Compression, compressed accounts
-├── x402/        9 dosya  — x402 protokol spec, client-server, facilitator, FAQ
-└── noble/       3 dosya  — AES-GCM, x25519 ECIES, SHA-256/HKDF README'leri
+```ts
+type DataEnvelope = {
+  payload: Uint8Array;
+  source_url: string;
+  fetched_at: number; // unix ms
+  expires_at: number; // fetched_at + tau_decay
+  merkle_root: Uint8Array; // SHA256(payload || source_url || fetched_at || expires_at)
+  provider_sig?: Uint8Array; // Ed25519, only if provider is opted in
+  keeper_sig: Uint8Array; // Ed25519
+};
 ```
 
-### Hızlı Referans
+Current MVP may start with `data_hash` + `key_commitment`, but any new design
+must move toward this envelope. Provider signatures must not be claimed until
+provider opt-in exists and is verified.
 
-| İhtiyaç | Yerel Dosya |
+### Time Decay / AoI
+
+Freshness is based on Age of Information:
+
+```text
+valid(t) = t < fetched_at + tau_decay
+freshness_score(t) = exp(-lambda * (t - fetched_at))
+```
+
+The current code may use linear decay. Do not change the model without updating
+this file and `CODEX_GUIDE.md`.
+
+### Revenue Split
+
+Revenue split is protocol state, not SDK/server folklore:
+
+```text
+R_provider = pool_fee * provider_ratio
+R_fetcher  = pool_fee * fetcher_ratio
+R_protocol = pool_fee * protocol_ratio
+```
+
+Ratios must come from on-chain config or clearly versioned protocol metadata.
+Do not hardcode business ratios in SDK/client code.
+
+## 4. Mandatory Local References
+
+Always check local docs before implementing or judging a protocol behavior.
+
+| Topic | Read First |
 |---|---|
-| Anchor `constraint =` syntax | `docs/external/anchor/account-constraints.md` |
-| PDA türetme | `docs/external/anchor/solana-pda.md` |
-| CPI nasıl çalışır | `docs/external/anchor/solana-cpi.md` |
-| SPL Token / USDC hesapları | `docs/external/anchor/solana-tokens.md` |
-| Transaction yapısı | `docs/external/anchor/solana-transactions.md` |
-| Light CPI account limiti | `docs/external/simd/0339-increase-cpi-account-info-limit.md` |
-| AoI / timely vote credits | `docs/external/simd/0033-timely-vote-credits.md` |
-| x402 keeper-upstream akışı | `docs/external/x402/client-server.md` |
-| x402 facilitator rolü | `docs/external/x402/facilitator.md` |
-| AES-256-GCM kullanımı | `docs/external/noble/noble-ciphers-README.md` |
-| x25519 ECDH + HKDF | `docs/external/noble/noble-curves-README.md` |
-| CompressedBuyerSlot | `docs/external/light-protocol/compressed-account-README.md` |
+| x402 client/server flow | `docs/external/x402/client-server.md` |
+| x402 facilitator / duplicate settlement | `docs/external/x402/facilitator.md` |
+| HTTP 402 semantics | `docs/external/x402/http-402.md` |
+| Anchor constraints | `docs/external/anchor/account-constraints.md` |
+| PDA / canonical bump | `docs/external/anchor/solana-pda.md` |
+| CPI | `docs/external/anchor/solana-cpi.md` |
+| SPL token / USDC | `docs/external/anchor/solana-tokens.md` |
+| AES-GCM | `docs/external/noble/noble-ciphers-README.md` |
+| Ed25519 / X25519 | `docs/external/noble/noble-curves-README.md` |
+| SHA-256 / HKDF | `docs/external/noble/noble-hashes-README.md` |
+| Light compression | `docs/external/light-protocol/*` |
 
-### Kaynak URL'leri (güncel versiyon için)
-- Solana Docs: https://solana.com/docs
-- SIMD Repo: https://github.com/solana-foundation/solana-improvement-documents
-- Anchor Docs: https://www.anchor-lang.com/docs
-- Light Protocol: https://docs.lightprotocol.com
-- x402: https://x402.org / https://github.com/coinbase/x402
-- @noble: https://github.com/paulmillr/noble-ciphers
+External memory, blog knowledge, or generic best practices do not override
+local docs and current code.
 
----
+## 5. Non-Negotiable Rules
 
-## 8. Yaygın Hatalar (Geçmişten)
+### 5.1 No Assumptions
 
-| Hata | Doğru Yol |
+- Do not assume API response schema unless documented or read from code/tests.
+- Do not assume Solana account layout unless defined in `state.rs`.
+- Do not assume cache key naming unless defined in `server/src/store.ts` or `server/src/matcher.ts`.
+- Do not assume provider opt-in status. If no registry exists, say so.
+- Do not claim Redis behavior while the current store is SQLite.
+
+### 5.2 Cryptographic Correctness
+
+- Use Ed25519 for Solana keypair signatures.
+- Use SHA-256 for payload hashes and envelope roots.
+- Never skip envelope/hash/key verification.
+- Never serve a cache hit as "verified" unless:
+  1. hash/root recomputation matches
+  2. required signature checks pass
+  3. `expires_at > Date.now()`
+- If verification fails, reject and log. Do not fall back to unverified data.
+- Tests for crypto must use real keys and real verification, not mocked success.
+
+### 5.3 Latency Constraint
+
+Future SDK relay to the pool must be asynchronous and non-blocking. The agent's
+critical path must not wait for relay completion.
+
+```ts
+const response = await fetch(url, options);
+pool.relay(buildEnvelope(response)).catch((err) => logger.error("relay failed", { err }));
+return response;
+```
+
+Do not write SDK logic that blocks the caller's fetch response on pool relay
+unless the user explicitly asks for a blocking mode.
+
+### 5.4 On-Chain Rules
+
+- Revenue ratios are read from on-chain config or versioned protocol metadata.
+- Provider opt-in must eventually be on-chain or cryptographically verifiable.
+- Use Anchor `#[error_code]` for custom errors.
+- Instructions should be idempotent where the protocol allows it.
+- Account additions require updates to initialization, tests, generated clients,
+  and docs in the same change.
+
+### 5.5 Cache / Pool Node Rules
+
+Current implementation uses SQLite. Redis is a future target unless introduced
+explicitly.
+
+- TTL must be set from `expires_at - Date.now()`.
+- If TTL <= 0, do not store.
+- Do not overwrite a fresh envelope/payload with an older one.
+- Public pool cache keys must not include secrets or raw credentials.
+- A future Redis implementation should use NX-style writes for fresh records.
+
+## 6. Prohibited Actions
+
+| Prohibited Action | Reason |
 |---|---|
-| `pre_fetch_collected` hesaplamak için `base_price × buyer_count` kullanmak | On-chain alanı oku — `settle_receipt` yazıyor, `claim_rebate` okuyor |
-| `anchor build` repo kökünden çalıştırmak | `cd anchor && anchor build` |
-| `PayloadRecord.body` alanına yazmak | Schema v2: `ciphertext`, `iv`, `poolKey`, `keyCommitment` |
-| `fetchAndVerify` ile şifreli payload doğrulamak | `fetchDecryptAndVerify` kullan (app/lib/crypto.ts) |
-| Anchor state'e alan ekleyip `initialize_pool`'da sıfırlamamak | Her yeni alan `initialize_pool`'da başlangıç değeri almalı |
-| `DataPool` struct literal'ı `tests.rs`'de güncellememeye | Rust derleyicisi `missing field` hatası verir |
+| Hardcode private keys or seeds | Security |
+| Serve cache hit without verification | Data integrity |
+| Block SDK fetch path for relay | Latency |
+| Assume provider permission | Protocol correctness |
+| Use `any` in SDK/client code | Type safety |
+| Mock cryptographic verification as passing | False confidence |
+| Modify revenue ratios outside protocol config | Single source of truth |
+| Store API keys or credentials in DataEnvelope | Privacy |
+| Use `innerHTML` for user data | XSS |
+| Write plaintext payloads to SQLite/cache | Confidentiality |
 
----
+## 7. Data Categories
 
-## 9. Planlama Rehberi
+Do not invent new categories without documenting them here and in
+`CODEX_GUIDE.md`.
 
-Karmaşık görev başlamadan önce:
+| Category | tau_decay | lambda | Example |
+|---|---:|---:|---|
+| `price.realtime` | 2s | 1.5 | CEX/DEX tickers |
+| `price.ohlc` | 60s | 0.05 | OHLC feeds |
+| `weather.current` | 300s | 0.01 | Open-Meteo, NOAA |
+| `weather.forecast` | 3600s | 0.001 | hourly forecast |
+| `chain.block` | 400ms | 5.0 | Solana slot data |
+| `chain.account` | 5s | 0.5 | on-chain account state |
+| `iot.sensor` | 10s | 0.2 | edge sensor reading |
+| `reference.static` | 86400s | 0.00001 | metadata/company data |
 
-1. `CODEX_GUIDE.md` Bölüm 11'deki eksik listesini kontrol et
-2. Etkilenen dosyaları listele (Anchor + server + frontend üçlüsü sık etkilenir)
-3. Şema değişikliği varsa `SCHEMA_VERSION`'ı artır
-4. Önce unit test yaz, sonra implement et (crypto.ts pattern'ı izle)
-5. `npx tsc --noEmit` ile bitir
+If the category is not listed, ask before assigning decay.
 
----
+## 8. Error Handling
 
-*Bu dosyayı güncellemek için: yeni bir kural keşfedildiğinde veya iki kez aynı hata yapıldığında ilgili bölüme ekle.*
+Every async path must handle errors explicitly. No silent failures.
+
+Structured rejection logs should include:
+
+- timestamp
+- reason enum: `EXPIRED`, `INVALID_SIG`, `MERKLE_MISMATCH`,
+  `PROVIDER_NOT_OPTED_IN`, `NOT_PUBLIC`, `SCHEMA_UNKNOWN`
+- hashed source URL, not raw if sensitive
+- envelope or pool id
+
+Production paths should use a structured logger when available. If no logger
+exists yet, note that before adding broad logging.
+
+## 9. Testing Requirements
+
+- Crypto operations need valid, expired, tampered payload, and missing signature tests.
+- Solana program tests must use real runtime tooling, not mocked runtime behavior.
+- Pool cache tests must cover TTL <= 0 and stale overwrite prevention.
+- If the user says "do not run code", do not run test/build/dev commands.
+
+## 10. Frontend / Product Constraints
+
+- Build the working product screen, not a marketing landing page.
+- UI must not claim features that do not exist.
+- Show the demo flow clearly: request, pool status, cache hit, verify, payment/receipt.
+- Avoid nested cards and generic AI-gradient styling.
+- Text must fit on mobile and desktop.
+
+## 11. Stop And Ask
+
+Stop and ask before proceeding if:
+
+- on-chain schema changed and TS types may be stale
+- a new data category is needed
+- provider opt-in flow changes
+- revenue split ratios need changing
+- crypto dependencies or primitives change
+- tests fail due to Solana/runtime version mismatch
+- deleting or overwriting schema/docs files is required
+
+## 12. Commit Convention
+
+```text
+<type>(<scope>): <short description>
+
+types: feat | fix | test | docs | refactor | chore
+scopes: app | server | anchor | sdk | docs | config
+```
+
+Example:
+
+```text
+feat(server): add keeper-signed data envelope
+fix(anchor): reject stale receipt settlement
+docs(protocol): document public-data MVP flow
+```
+
+Last updated: May 2026.

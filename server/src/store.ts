@@ -24,6 +24,7 @@ export interface PoolRecord {
   method: string;
   freshnessWindowSecs: number;
   buyers: string[];
+  authorizedBuyers: string[];
   createdAt: number; // unix ms
   fetchedAt?: number;
   dataHash?: string;
@@ -43,6 +44,12 @@ export interface PayloadRecord {
   poolKey: Buffer;
   /** SHA-256("DATAPOOL_K_V1" || poolKey) — published on-chain in register_dataset. */
   keyCommitment: Buffer;
+  envelopeVersion: number;
+  sourceUrl: string;
+  sourceHash: Buffer;
+  merkleRoot: Buffer;
+  keeperPubkey: Buffer;
+  keeperSignature: Buffer;
   contentType: string;
   fetchedAt: number;
   expiresAt: number;
@@ -57,6 +64,7 @@ interface PoolRow {
   method: string;
   freshness_window_secs: number;
   buyers_json: string;
+  authorized_buyers_json: string;
   created_at: number;
   fetched_at: number | null;
   data_hash: string | null;
@@ -71,6 +79,12 @@ interface PayloadRow {
   iv: Buffer;
   pool_key: Buffer;
   key_commitment: Buffer;
+  envelope_version: number;
+  source_url: string;
+  source_hash: Buffer;
+  merkle_root: Buffer;
+  keeper_pubkey: Buffer;
+  keeper_signature: Buffer;
   content_type: string;
   fetched_at: number;
   expires_at: number;
@@ -86,6 +100,7 @@ CREATE TABLE IF NOT EXISTS pools (
   method                TEXT NOT NULL,
   freshness_window_secs INTEGER NOT NULL,
   buyers_json           TEXT NOT NULL,
+  authorized_buyers_json TEXT NOT NULL DEFAULT '[]',
   created_at            INTEGER NOT NULL,
   fetched_at            INTEGER,
   data_hash             TEXT,
@@ -102,6 +117,12 @@ CREATE TABLE IF NOT EXISTS payloads (
   iv                 BLOB NOT NULL,
   pool_key           BLOB NOT NULL,
   key_commitment     BLOB NOT NULL,
+  envelope_version   INTEGER NOT NULL,
+  source_url         TEXT NOT NULL,
+  source_hash        BLOB NOT NULL,
+  merkle_root        BLOB NOT NULL,
+  keeper_pubkey      BLOB NOT NULL,
+  keeper_signature   BLOB NOT NULL,
   content_type       TEXT NOT NULL,
   fetched_at         INTEGER NOT NULL,
   expires_at         INTEGER NOT NULL,
@@ -116,7 +137,7 @@ CREATE INDEX IF NOT EXISTS payloads_expires_at ON payloads(expires_at);
  * drops & recreates tables on mismatch (cache is rebuilt naturally on next
  * fetch, no migration step needed because everything off-chain is replaceable).
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 5;
 
 function rowToPool(r: PoolRow): PoolRecord {
   return {
@@ -127,6 +148,7 @@ function rowToPool(r: PoolRow): PoolRecord {
     method: r.method,
     freshnessWindowSecs: r.freshness_window_secs,
     buyers: JSON.parse(r.buyers_json),
+    authorizedBuyers: JSON.parse(r.authorized_buyers_json),
     createdAt: r.created_at,
     fetchedAt: r.fetched_at ?? undefined,
     dataHash: r.data_hash ?? undefined,
@@ -143,6 +165,12 @@ function rowToPayload(r: PayloadRow): PayloadRecord {
     iv: r.iv,
     poolKey: r.pool_key,
     keyCommitment: r.key_commitment,
+    envelopeVersion: r.envelope_version,
+    sourceUrl: r.source_url,
+    sourceHash: r.source_hash,
+    merkleRoot: r.merkle_root,
+    keeperPubkey: r.keeper_pubkey,
+    keeperSignature: r.keeper_signature,
     contentType: r.content_type,
     fetchedAt: r.fetched_at,
     expiresAt: r.expires_at,
@@ -204,11 +232,11 @@ export class PoolStore {
       .prepare(
         `INSERT INTO pools (
           request_hash_hex, endpoint, params_json, provider_id, method,
-          freshness_window_secs, buyers_json, created_at, fetched_at,
+          freshness_window_secs, buyers_json, authorized_buyers_json, created_at, fetched_at,
           data_hash, status, min_buyers, expires_at
         ) VALUES (
           @request_hash_hex, @endpoint, @params_json, @provider_id, @method,
-          @freshness_window_secs, @buyers_json, @created_at, @fetched_at,
+          @freshness_window_secs, @buyers_json, @authorized_buyers_json, @created_at, @fetched_at,
           @data_hash, @status, @min_buyers, @expires_at
         )`
       )
@@ -220,6 +248,7 @@ export class PoolStore {
         method: p.method,
         freshness_window_secs: p.freshnessWindowSecs,
         buyers_json: JSON.stringify(p.buyers),
+        authorized_buyers_json: JSON.stringify(p.authorizedBuyers),
         created_at: p.createdAt,
         fetched_at: p.fetchedAt ?? null,
         data_hash: p.dataHash ?? null,
@@ -268,6 +297,22 @@ export class PoolStore {
     return true;
   }
 
+  addAuthorizedBuyer(hashHex: string, buyer: string): boolean {
+    const row = this.db
+      .prepare("SELECT authorized_buyers_json FROM pools WHERE request_hash_hex = ?")
+      .get(hashHex) as { authorized_buyers_json: string } | undefined;
+    if (!row) return false;
+    const buyers: string[] = JSON.parse(row.authorized_buyers_json);
+    if (buyers.includes(buyer)) return false;
+    buyers.push(buyer);
+    this.db
+      .prepare(
+        "UPDATE pools SET authorized_buyers_json = ? WHERE request_hash_hex = ?"
+      )
+      .run(JSON.stringify(buyers), hashHex);
+    return true;
+  }
+
   recordFetched(
     hashHex: string,
     dataHash: string,
@@ -301,13 +346,20 @@ export class PoolStore {
       .prepare(
         `INSERT INTO payloads (
           request_hash_hex, ciphertext, iv, pool_key, key_commitment,
+          envelope_version, source_url, source_hash, merkle_root, keeper_pubkey, keeper_signature,
           content_type, fetched_at, expires_at, payment_signature
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(request_hash_hex) DO UPDATE SET
           ciphertext = excluded.ciphertext,
           iv = excluded.iv,
           pool_key = excluded.pool_key,
           key_commitment = excluded.key_commitment,
+          envelope_version = excluded.envelope_version,
+          source_url = excluded.source_url,
+          source_hash = excluded.source_hash,
+          merkle_root = excluded.merkle_root,
+          keeper_pubkey = excluded.keeper_pubkey,
+          keeper_signature = excluded.keeper_signature,
           content_type = excluded.content_type,
           fetched_at = excluded.fetched_at,
           expires_at = excluded.expires_at,
@@ -319,6 +371,12 @@ export class PoolStore {
         p.iv,
         p.poolKey,
         p.keyCommitment,
+        p.envelopeVersion,
+        p.sourceUrl,
+        p.sourceHash,
+        p.merkleRoot,
+        p.keeperPubkey,
+        p.keeperSignature,
         p.contentType,
         p.fetchedAt,
         p.expiresAt,

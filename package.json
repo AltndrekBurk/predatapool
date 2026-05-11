@@ -1,13 +1,12 @@
 {
-  "name": "nextjs-anchor",
-  "description": "Next.js, Tailwind, @solana/kit, Anchor vault program",
+  "name": "predatapool-app",
+  "description": "PreDataPool public data reuse MVP frontend",
   "keywords": [
+    "predatapool",
+    "x402",
+    "solana",
     "anchor",
-    "kit",
     "nextjs",
-    "react",
-    "solana-kit",
-    "tailwind",
     "typescript"
   ],
   "create-solana-dapp": {

@@ -18,6 +18,12 @@ function makePayload(
     iv: Buffer.alloc(12, 0xaa),
     poolKey: Buffer.alloc(32, 0xbb),
     keyCommitment: Buffer.alloc(32, 0xcc),
+    envelopeVersion: 0,
+    sourceUrl: "http://x.test/y",
+    sourceHash: Buffer.alloc(32, 0xdd),
+    merkleRoot: Buffer.alloc(32, 0xee),
+    keeperPubkey: Buffer.alloc(32, 0x11),
+    keeperSignature: Buffer.alloc(64, 0xff),
     contentType: "application/json",
     fetchedAt: 1,
     expiresAt: 100,
@@ -34,6 +40,7 @@ function makePool(overrides: Partial<PoolRecord> = {}): PoolRecord {
     method: "GET",
     freshnessWindowSecs: 60,
     buyers: [],
+    authorizedBuyers: [],
     createdAt: 1_000_000,
     status: "pending",
     minBuyers: 2,
@@ -50,6 +57,17 @@ test("insertPool + getPool roundtrip", () => {
   store.insertPool(p);
   const got = store.getPool(p.requestHashHex);
   assert.deepEqual(got, p);
+  store.close();
+});
+
+test("addAuthorizedBuyer dedups receipt-authorized buyers", () => {
+  const store = new PoolStore(":memory:");
+  const p = makePool();
+  store.insertPool(p);
+  assert.equal(store.addAuthorizedBuyer(p.requestHashHex, "B1"), true);
+  assert.equal(store.addAuthorizedBuyer(p.requestHashHex, "B1"), false);
+  const got = store.getPool(p.requestHashHex);
+  assert.deepEqual(got?.authorizedBuyers, ["B1"]);
   store.close();
 });
 
@@ -112,6 +130,12 @@ test("putPayload + getPayload roundtrip with binary ciphertext", () => {
   assert.equal(got?.iv.length, 12);
   assert.equal(got?.poolKey.length, 32);
   assert.equal(got?.keyCommitment.length, 32);
+  assert.equal(got?.envelopeVersion, 0);
+  assert.equal(got?.sourceUrl, "http://x.test/y");
+  assert.equal(got?.sourceHash.length, 32);
+  assert.equal(got?.merkleRoot.length, 32);
+  assert.equal(got?.keeperPubkey.length, 32);
+  assert.equal(got?.keeperSignature.length, 64);
   assert.equal(got?.contentType, "application/octet-stream");
   assert.equal(got?.paymentSignature, "siggy");
   store.close();

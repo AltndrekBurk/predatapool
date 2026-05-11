@@ -1,7 +1,7 @@
 /**
  * DataPool client SDK — typed wrapper over the matching server's HTTP API.
  *
- * Stable contract (server publishes `/pool/:hash/metadata` v1). When fields
+ * Stable contract (server publishes `/pool/:hash/metadata` v2). When fields
  * are added the server bumps the `v` discriminator; clients that don't
  * understand a higher version should refuse to verify.
  */
@@ -32,6 +32,7 @@ export interface Pool {
   freshnessWindowSecs: number;
   status: PoolStatus;
   buyers: string[];
+  authorizedBuyers: string[];
   createdAt: number;
   fetchedAt?: number;
   dataHash?: string;
@@ -64,7 +65,7 @@ export interface RequestResponse {
  * client everything needed to verify and consume a request.
  */
 export interface PoolMetadata {
-  v: 1;
+  v: 2;
   poolHash: string;
   status: PoolStatus;
   cacheHit: boolean;
@@ -80,6 +81,14 @@ export interface PoolMetadata {
   dataHash?: string;
   storageUri?: string;
   payloadUrl?: string;
+  envelope?: {
+    version: 0;
+    sourceUrl: string;
+    sourceHash: string;
+    merkleRoot: string;
+    keeperPubkey: string;
+    keeperSignature: string;
+  };
   paymentSignature?: string;
 }
 
@@ -127,7 +136,7 @@ export async function getPoolMetadata(hash: string): Promise<PoolMetadata> {
   const res = await fetch(`${SERVER_URL}/pool/${hash}/metadata`);
   if (!res.ok) throw new Error(`Server error: ${res.status}`);
   const meta = (await res.json()) as PoolMetadata;
-  if (meta.v !== 1) {
+  if (meta.v !== 2) {
     throw new Error(`Unsupported PoolMetadata version: ${meta.v}`);
   }
   return meta;

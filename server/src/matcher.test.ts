@@ -221,12 +221,13 @@ test("buildPoolMetadata — pending pool exposes inputs but no fetch fields", ()
     method: "GET",
     freshnessWindowSecs: 60,
     buyers: ["buyer-1"],
+    authorizedBuyers: [],
     createdAt: 1_000_000,
     status: "pending",
     minBuyers: 2,
   };
   const meta = buildPoolMetadata(pool, undefined, "https://srv");
-  assert.equal(meta.v, 1);
+  assert.equal(meta.v, 2);
   assert.equal(meta.status, "pending");
   assert.equal(meta.cacheHit, false);
   assert.equal(meta.providerId, PROVIDER_A);
@@ -248,6 +249,7 @@ test("buildPoolMetadata — fetched + fresh pool advertises storageUri and cache
     method: "GET",
     freshnessWindowSecs: 60,
     buyers: ["b1", "b2"],
+    authorizedBuyers: ["b1"],
     createdAt: 1_000,
     fetchedAt: 2_000,
     dataHash: "deadbeef",
@@ -261,6 +263,12 @@ test("buildPoolMetadata — fetched + fresh pool advertises storageUri and cache
     iv: Buffer.alloc(12, 0xaa),
     poolKey: Buffer.alloc(32, 0xbb),
     keyCommitment: Buffer.alloc(32, 0xcc),
+    envelopeVersion: 0,
+    sourceUrl: "https://api.weatherxm.com/v1/cells",
+    sourceHash: Buffer.alloc(32, 0xdd),
+    merkleRoot: Buffer.alloc(32, 0xee),
+    keeperPubkey: Buffer.alloc(32, 0x11),
+    keeperSignature: Buffer.alloc(64, 0xff),
     contentType: "application/json",
     fetchedAt: 2_000,
     expiresAt: 6_000,
@@ -271,6 +279,9 @@ test("buildPoolMetadata — fetched + fresh pool advertises storageUri and cache
   assert.equal(meta.dataHash, "deadbeef");
   assert.equal(meta.storageUri, `https://srv/pool/${pool.requestHashHex}/payload`);
   assert.equal(meta.payloadUrl, `https://srv/pool/${pool.requestHashHex}/payload`);
+  assert.equal(meta.envelope?.version, 0);
+  assert.equal(meta.envelope?.sourceUrl, "https://api.weatherxm.com/v1/cells");
+  assert.equal(meta.envelope?.merkleRoot, "ee".repeat(32));
   assert.equal(meta.paymentSignature, "sigsigsig");
 });
 
@@ -284,6 +295,7 @@ test("buildPoolMetadata — fetched + expired pool reports cacheHit=false", () =
     method: "GET",
     freshnessWindowSecs: 60,
     buyers: [],
+    authorizedBuyers: [],
     createdAt: 1_000,
     fetchedAt: 2_000,
     dataHash: "abc",

@@ -91,7 +91,7 @@ export function DatapoolRequestForm({ onPoolJoined }: Props) {
           response card once we know if it was a cache hit. */}
       <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-4 space-y-2">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 dark:text-green-300">
-          Why it's cheaper
+          Why it&apos;s cheaper
         </p>
         <div className="grid grid-cols-3 gap-2 text-center">
           <SavingsCell label="Solo x402" value="$1.00" />

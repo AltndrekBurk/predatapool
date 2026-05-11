@@ -16,6 +16,7 @@ import {
   fetchDecryptAndVerify,
   KeyCommitmentError,
   DecryptDataHashMismatchError,
+  DataEnvelopeVerificationError,
 } from "../lib/crypto";
 import { useSignReceipt, toWire } from "../lib/hooks/use-sign-receipt";
 import { useApproveDelegate, DEFAULT_APPROVAL_CAP } from "../lib/hooks/use-approve-delegate";
@@ -60,9 +61,13 @@ export function PoolCard({ pool, onJoined }: Props) {
   const { hasApproval, delegatedAmount, approve, isApproving } =
     useApproveDelegate();
   const [joining, setJoining] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const address = wallet?.account.address;
   const isUserInPool = address ? pool.buyers.includes(address) : false;
+  const isUserAuthorized = address
+    ? (pool.authorizedBuyers ?? []).includes(address)
+    : false;
   const needsApproval = !hasApproval(BigInt(BASE_PRICE_USDC));
 
   const lifecycle: Lifecycle = poolLifecycle(pool.status, pool.expiresAt);
@@ -96,6 +101,11 @@ export function PoolCard({ pool, onJoined }: Props) {
     };
   }, [pool.requestHashHex]);
 
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   // Local verification state — drives the Verify Payload button + result line.
   type VerifyState =
     | { status: "idle" }
@@ -110,8 +120,8 @@ export function PoolCard({ pool, onJoined }: Props) {
       toast.error("Pool not yet fetched — nothing to verify");
       return;
     }
-    if (!isUserInPool || !address) {
-      toast.error("Join pool first to decrypt and verify");
+    if (!isUserAuthorized || !address) {
+      toast.error("Submit a signed receipt first to decrypt and verify");
       return;
     }
     if (!wallet?.signMessage) {
@@ -146,6 +156,11 @@ export function PoolCard({ pool, onJoined }: Props) {
         toast.error("Hash mismatch after decrypt", {
           description: `expected ${err.expected.slice(0, 12)}…, got ${err.actual.slice(0, 12)}…`,
         });
+      } else if (err instanceof DataEnvelopeVerificationError) {
+        setVerify({ status: "error", message: err.message });
+        toast.error("Envelope verification failed", {
+          description: err.message,
+        });
       } else {
         const message = (err as Error).message ?? String(err);
         setVerify({ status: "error", message });
@@ -161,13 +176,13 @@ export function PoolCard({ pool, onJoined }: Props) {
   const progressPercent = Math.round(progress * 100);
 
   const hoursElapsed = pool.fetchedAt
-    ? (Date.now() - pool.fetchedAt) / 3_600_000
+    ? (nowMs - pool.fetchedAt) / 3_600_000
     : 0;
 
   // Time left in the freshness window — drives the "Cached · expires in Nm" line.
   const msUntilExpiry =
-    pool.expiresAt && pool.expiresAt > Date.now()
-      ? pool.expiresAt - Date.now()
+    pool.expiresAt && pool.expiresAt > nowMs
+      ? pool.expiresAt - nowMs
       : 0;
   const expiresInLabel = formatDuration(msUntilExpiry);
 
@@ -196,8 +211,8 @@ export function PoolCard({ pool, onJoined }: Props) {
       toast.error("Connect your wallet first");
       return;
     }
-    if (isUserInPool) {
-      toast.info("Already in this pool");
+    if (isUserAuthorized) {
+      toast.info("Receipt already submitted for this pool");
       return;
     }
     if (!canSign) {
@@ -310,6 +325,25 @@ export function PoolCard({ pool, onJoined }: Props) {
             Next request to this canonical key creates a fresh pool and triggers
             a new upstream fetch + payment.
           </p>
+        </div>
+      )}
+
+      {metadata?.envelope && (
+        <div className="rounded-xl border border-border-low bg-cream/30 px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold">DataEnvelope v{metadata.envelope.version}</p>
+            <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase text-muted">
+              keeper signed
+            </span>
+          </div>
+          <div className="grid gap-1 text-[11px] text-muted">
+            <p className="truncate" title={metadata.envelope.sourceUrl}>
+              source {shortenEndpoint(metadata.envelope.sourceUrl)}
+            </p>
+            <p className="font-mono truncate" title={metadata.envelope.merkleRoot}>
+              root {metadata.envelope.merkleRoot.slice(0, 16)}...
+            </p>
+          </div>
         </div>
       )}
 
@@ -436,23 +470,25 @@ export function PoolCard({ pool, onJoined }: Props) {
           lifecycle === "cached") && (
           <button
             onClick={handleJoin}
-            disabled={joining || isUserInPool || !address || needsApproval}
+            disabled={joining || isUserAuthorized || !address || needsApproval}
             className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
           >
             {joining
               ? lifecycle === "cached"
                 ? "Settling..."
                 : "Joining..."
-              : isUserInPool
+              : isUserAuthorized
                 ? lifecycle === "cached"
-                  ? "Joined ✓ Cached"
-                  : "Joined"
+                  ? "Receipt ✓ Cached"
+                  : "Receipt signed"
                 : !address
                   ? "Connect Wallet"
-                  : needsApproval
-                    ? "Authorize First"
-                    : lifecycle === "cached"
-                      ? "Catch Cache Hit"
+                : needsApproval
+                  ? "Authorize First"
+                : isUserInPool
+                  ? "Submit Receipt"
+                  : lifecycle === "cached"
+                    ? "Catch Cache Hit"
                       : lifecycle === "fetching"
                         ? "Wait for Fetch"
                         : "Join Pool"}

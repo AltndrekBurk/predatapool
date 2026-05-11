@@ -16,7 +16,7 @@
  */
 
 import { gcm } from "@noble/ciphers/aes.js";
-import { x25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 
@@ -86,6 +86,37 @@ function bytesToHex(bytes: Uint8Array): string {
     .join("");
 }
 
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const len = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Uint8Array(len);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function u64be(n: number): Uint8Array {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new DataEnvelopeVerificationError("Invalid envelope timestamp");
+  }
+  const out = new Uint8Array(8);
+  let x = BigInt(n);
+  for (let i = 7; i >= 0; i--) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
+}
+
 /** Canonical key-request message — mirrors server-side keyReqMessage. */
 function buildKeyReqMessage(
   poolHashHex: string,
@@ -146,6 +177,47 @@ export class DecryptDataHashMismatchError extends Error {
   ) {
     super(`Data hash mismatch after decrypt: expected ${expected}, got ${actual}`);
     this.name = "DecryptDataHashMismatchError";
+  }
+}
+
+export class DataEnvelopeVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DataEnvelopeVerificationError";
+  }
+}
+
+function verifyEnvelopeHeaders(plaintext: Uint8Array, headers: Headers): void {
+  const sourceUrl = headers.get("X-DataPool-Source-Url");
+  const fetchedAtRaw = headers.get("X-DataPool-Fetched-At");
+  const expiresAtRaw = headers.get("X-DataPool-Expires-At");
+  const rootHex = headers.get("X-DataPool-Merkle-Root");
+  const keeperPubkeyHex = headers.get("X-DataPool-Keeper-Pubkey");
+  const keeperSigHex = headers.get("X-DataPool-Keeper-Signature");
+  if (!sourceUrl || !fetchedAtRaw || !expiresAtRaw || !rootHex || !keeperPubkeyHex || !keeperSigHex) {
+    throw new DataEnvelopeVerificationError("Missing DataEnvelope headers");
+  }
+
+  const fetchedAt = Number(fetchedAtRaw);
+  const expiresAt = Number(expiresAtRaw);
+  if (expiresAt <= Date.now()) {
+    throw new DataEnvelopeVerificationError("DataEnvelope expired");
+  }
+
+  const expectedRoot = hexToBytes(rootHex);
+  const actualRoot = sha256(
+    concatBytes([
+      plaintext,
+      new TextEncoder().encode(sourceUrl),
+      u64be(fetchedAt),
+      u64be(expiresAt),
+    ])
+  );
+  if (!bytesEqual(actualRoot, expectedRoot)) {
+    throw new DataEnvelopeVerificationError("DataEnvelope root mismatch");
+  }
+  if (!ed25519.verify(hexToBytes(keeperSigHex), expectedRoot, hexToBytes(keeperPubkeyHex))) {
+    throw new DataEnvelopeVerificationError("Invalid keeper signature");
   }
 }
 
@@ -239,7 +311,9 @@ export async function fetchDecryptAndVerify(params: {
   // Step 5 — decrypt
   const plaintext = gcm(poolKey, iv).decrypt(ciphertext);
 
-  // Step 6 — verify data_hash against plaintext
+  // Step 6 — verify DataEnvelope + data_hash against plaintext
+  verifyEnvelopeHeaders(plaintext, payloadRes.headers);
+
   const hashBuf = await crypto.subtle.digest(
     "SHA-256",
     plaintext as unknown as ArrayBuffer

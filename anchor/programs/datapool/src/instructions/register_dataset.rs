@@ -27,6 +27,10 @@ pub fn handle_register_dataset(
     _request_hash: [u8; 32],
     storage_uri: String,
     key_commitment: [u8; 32],
+    source_hash: [u8; 32],
+    expires_at_ms: i64,
+    merkle_root: [u8; 32],
+    keeper_signature: [u8; 64],
 ) -> Result<()> {
     require!(
         storage_uri.len() <= DataPool::STORAGE_URI_MAX_LEN,
@@ -37,6 +41,10 @@ pub fn handle_register_dataset(
 
     pool.storage_uri = storage_uri;
     pool.key_commitment = key_commitment;
+    pool.source_hash = source_hash;
+    pool.expires_at_ms = expires_at_ms;
+    pool.merkle_root = merkle_root;
+    pool.keeper_signature = keeper_signature;
 
     // Re-open pool for post-fetch buyers at decayed price.
     pool.is_open = true;

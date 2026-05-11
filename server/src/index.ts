@@ -17,6 +17,7 @@ import {
   registerDatasetOnChain,
   initializePoolOnChain,
   settleReceiptOnChain,
+  loadKeeper,
   loadKeeperKitSigner,
   getKeeperRpcUrl,
 } from "./keeper.js";
@@ -38,6 +39,7 @@ import {
   WRAPPED_KEY_BYTES,
   X25519_KEY_BYTES,
 } from "./crypto.js";
+import { buildDataEnvelopeV0 } from "./envelope.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
 const app = express();
@@ -57,6 +59,24 @@ const USDC_MINT = new PublicKey(
 
 /** Cap on the on-chain `storage_uri` String — must match `DataPool::STORAGE_URI_MAX_LEN`. */
 const STORAGE_URI_MAX_LEN = 128;
+
+const SENSITIVE_PARAM_RE =
+  /(auth|token|secret|password|cookie|session|bearer|private|user|account|wallet|address)/i;
+
+function assertPublicPoolEligible(input: {
+  endpoint: string;
+  params: Record<string, string>;
+}): void {
+  const url = new URL(input.endpoint);
+  if (url.username || url.password) {
+    throw new Error("Endpoint userinfo is not pool-eligible public data");
+  }
+  for (const key of [...url.searchParams.keys(), ...Object.keys(input.params)]) {
+    if (SENSITIVE_PARAM_RE.test(key)) {
+      throw new Error(`Param "${key}" looks user-specific or secret; use opt-out/private flow`);
+    }
+  }
+}
 
 /**
  * Tracks pending on-chain `initialize_pool` txns by pool hash so we can
@@ -94,6 +114,10 @@ app.post("/request", async (req, res) => {
     };
 
     const earlyAgreement = lookupProvider(body.endpoint);
+    assertPublicPoolEligible({
+      endpoint: body.endpoint,
+      params: body.params ?? {},
+    });
     const { pool, shouldTriggerFetch, isNewPool, cacheHit } = joinPool({
       endpoint: body.endpoint,
       method: body.method ?? "GET",
@@ -164,21 +188,30 @@ app.post("/request", async (req, res) => {
           const fresh = getPool(pool.requestHashHex);
           let registerKeyCommitment = Buffer.alloc(32, 0);
           if (fresh?.fetchedAt && fresh.expiresAt) {
-            const plaintext = Buffer.from(
-              typeof result.data === "string"
-                ? result.data
-                : JSON.stringify(result.data)
-            );
+            const plaintext = result.rawBody;
             const k = newPoolKey();
             const enc = encryptPayload(k, plaintext);
             registerKeyCommitment = Buffer.from(deriveKeyCommitment(k));
+            const envelope = buildDataEnvelopeV0({
+              payload: plaintext,
+              sourceUrl: result.source,
+              fetchedAt: fresh.fetchedAt,
+              expiresAt: fresh.expiresAt,
+              keeper: loadKeeper(),
+            });
             getStore().putPayload({
               requestHashHex: pool.requestHashHex,
               ciphertext: Buffer.from(enc.ciphertext),
               iv: Buffer.from(enc.iv),
               poolKey: Buffer.from(k),
               keyCommitment: registerKeyCommitment,
-              contentType: "application/json",
+              envelopeVersion: envelope.version,
+              sourceUrl: envelope.sourceUrl,
+              sourceHash: envelope.sourceHash,
+              merkleRoot: envelope.merkleRoot,
+              keeperPubkey: envelope.keeperPubkey,
+              keeperSignature: envelope.keeperSignature,
+              contentType: result.contentType || "application/octet-stream",
               fetchedAt: fresh.fetchedAt,
               expiresAt: fresh.expiresAt,
               paymentSignature: result.paymentSignature,
@@ -198,10 +231,20 @@ app.post("/request", async (req, res) => {
           }
 
           await triggerFetchOnChain(pool.requestHashHex, dataHashHex);
+          const payloadRecord = getStore().getPayload(pool.requestHashHex);
+          if (!payloadRecord) {
+            throw new Error("payload missing after encryption");
+          }
           await registerDatasetOnChain(
             pool.requestHashHex,
             storageUri,
-            registerKeyCommitment
+            registerKeyCommitment,
+            {
+              sourceHash: payloadRecord.sourceHash,
+              expiresAt: payloadRecord.expiresAt,
+              merkleRoot: payloadRecord.merkleRoot,
+              keeperSignature: payloadRecord.keeperSignature,
+            }
           );
 
           console.log(
@@ -290,6 +333,15 @@ app.get("/pool/:hash/payload", (req, res) => {
   );
   res.setHeader("X-DataPool-Fetched-At", String(payload.fetchedAt));
   res.setHeader("X-DataPool-Expires-At", String(payload.expiresAt));
+  res.setHeader("X-DataPool-Envelope-Version", String(payload.envelopeVersion));
+  res.setHeader("X-DataPool-Source-Url", payload.sourceUrl);
+  res.setHeader("X-DataPool-Source-Hash", payload.sourceHash.toString("hex"));
+  res.setHeader("X-DataPool-Merkle-Root", payload.merkleRoot.toString("hex"));
+  res.setHeader("X-DataPool-Keeper-Pubkey", payload.keeperPubkey.toString("hex"));
+  res.setHeader(
+    "X-DataPool-Keeper-Signature",
+    payload.keeperSignature.toString("hex")
+  );
   if (payload.paymentSignature) {
     res.setHeader("X-DataPool-Payment-Signature", payload.paymentSignature);
   }
@@ -310,7 +362,7 @@ app.get("/pool/:hash/payload", (req, res) => {
  * Signed message (deterministic):
  *   "DATAPOOL_KEYREQ_V1" || pool_hash (32B) || encPubkey (32B) || nonce (8B BE)
  *
- * Membership check: buyer must be in the off-chain pool buyers list.
+ * Authorization check: buyer must have submitted a valid signed receipt.
  * (After Photon integration this should also check the on-chain
  * compressed BuyerSlot — currently TODO.)
  */
@@ -366,8 +418,8 @@ app.post("/pool/:hash/key", (req, res) => {
       res.status(410).json({ error: "Payload expired" });
       return;
     }
-    if (!pool.buyers.includes(body.buyer)) {
-      res.status(403).json({ error: "Buyer not a member of this pool" });
+    if (!pool.authorizedBuyers.includes(body.buyer)) {
+      res.status(403).json({ error: "Buyer has not submitted a valid receipt" });
       return;
     }
     const encPubBytes = Buffer.from(body.encPubkey, "hex");
@@ -456,6 +508,7 @@ app.post("/receipt", (req, res) => {
       signedMessage: new Uint8Array(Buffer.from(body.signedMessage, "hex")),
       signature: new Uint8Array(Buffer.from(body.signature, "hex")),
     });
+    getStore().addAuthorizedBuyer(result.poolHashHex, body.buyer);
 
     res.status(200).json({
       ok: true,

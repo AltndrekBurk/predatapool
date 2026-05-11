@@ -50,7 +50,7 @@ pub struct JoinPool<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_join_pool(ctx: Context<JoinPool>, request_hash: [u8; 32]) -> Result<()> {
+pub fn handle_join_pool(ctx: Context<JoinPool>, _request_hash: [u8; 32]) -> Result<()> {
     let pool = &mut ctx.accounts.pool;
     let now = Clock::get()?.unix_timestamp;
 
