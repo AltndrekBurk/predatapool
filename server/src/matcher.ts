@@ -1,11 +1,21 @@
 /**
- * Request Deduplication & Pool Formation
+ * Request Coalescing & Pool Formation
  *
- * Incoming data requests are hashed to a canonical 32-byte key (v2 — see
+ * The data-layer side of PreDataPool's coalescing model — the Solana-native
+ * analogue of Cloudflare's "concurrent requests for the same URL share one
+ * origin fetch" for paid, verifiable M2M data.
+ *
+ * Incoming requests are hashed to a canonical 32-byte key (v2 — see
  * `hashRequestV2`). Pool state lives in the persistent `PoolStore` so it
  * survives server restart. Within a freshness window a fetched pool is
- * REUSED — that's the whole point of x402-MPP, and what gates the
- * "reuse fee" decay schedule on-chain.
+ * REUSED — that is the coalescing: same canonical request + fresh AoI
+ * window = same pool = one upstream fetch + one provider payment shared
+ * across every caller. This also gates the "reuse fee" decay schedule
+ * recorded on-chain.
+ *
+ * Caller UX: today, concurrent callers join the pool and observe
+ * `status: "fetching"` until `markFetched` flips it; an SDK-side fan-in
+ * (shared in-flight promise) is the natural next step but not in this file.
  */
 
 import { createHash } from "crypto";

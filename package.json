@@ -1,8 +1,13 @@
 {
   "name": "predatapool-app",
-  "description": "M2M data reuse layer for IoT and edge workloads",
+  "description": "Solana-native request coalescing for DePIN, IoT, and edge compute — verified data reuse for the M2M economy",
   "keywords": [
     "predatapool",
+    "request-coalescing",
+    "depin",
+    "iot",
+    "edge",
+    "m2m",
     "x402",
     "solana",
     "anchor",
