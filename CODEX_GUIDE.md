@@ -6,7 +6,9 @@ Bu dosya projenin kisa karar rehberidir. Ayrintili veya emin olunmayan her tekni
 
 ## 1. Net Hedef
 
-PreDataPool, ayni public API verisini isteyen birden fazla ajan/makine icin tek fetch, tek upstream odeme ve paylasimli dogrulanabilir cache katmani kurar.
+PreDataPool, **DePIN, IoT ve edge compute icin Solana-native bir request coalescing katmanidir** — Cloudflare'in "tek fetch, N caller paylasimi" deseninin M2M ekonomisine uyarlanmis hali. Ayni canonical public request'i hedefleyen birden fazla ajan/makine icin tek upstream fetch + tek provider odemesi yapar, sifrelenmis ve dogrulanabilir reuse sunar, Solana'da tek batch'te settle eder.
+
+"Coalescing" notu: MVP **veri katmaninda** coalesce eder (ayni canonical request + taze AoI window = ayni pool + ayni payload + ayni upstream odemesi). Caller tarafi UX su an polling tabanli; bunu paylasimli in-flight promise'a cevirmek SDK fan-in isidir (bkz. AGENTS.md §5.3).
 
 Ilk MVP yalnizca public ve paylasilabilir veriye odaklanir:
 

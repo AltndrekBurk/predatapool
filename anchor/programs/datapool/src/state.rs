@@ -148,39 +148,6 @@ impl DataPool {
     }
 }
 
-/// One buyer's slot in a DataPool — legacy uncompressed form.
-///
-/// Replaced by `CompressedBuyerSlot` (Light Protocol compressed leaf) for
-/// the new settle_receipt path. Kept here so the legacy `join_pool` ix and
-/// existing `claim_rebate` continue to work during the migration window.
-/// New deployments should never write to this; the compressed variant has
-/// ~5000× lower rent cost per buyer.
-///
-/// Seeds: ["buyer_slot", pool_pubkey, buyer_pubkey]
-#[account]
-#[derive(InitSpace)]
-pub struct BuyerSlot {
-    pub pool: Pubkey,
-    pub buyer: Pubkey,
-
-    /// Amount paid in USDC micro-units
-    pub amount_paid: u64,
-
-    /// Unix timestamp of join
-    pub joined_at: i64,
-
-    /// Whether this was a pre-fetch sponsor (joined before fetched_at was set)
-    pub is_sponsor: bool,
-
-    /// Whether rebate has been claimed
-    pub rebate_claimed: bool,
-
-    /// Rebate amount available (set after enough post-fetch buyers have joined)
-    pub rebate_amount: u64,
-
-    pub bump: u8,
-}
-
 /// One buyer's slot stored as a compressed leaf in Light Protocol's state
 /// Merkle tree. Same logical fields as `BuyerSlot` minus the bump (no PDA
 /// — the leaf address is derived from `["buyer_slot", pool, buyer]` via

@@ -91,11 +91,6 @@ pub mod datapool {
         Ok(())
     }
 
-    /// Buyer joins the pool, paying the current (possibly decayed) price.
-    pub fn join_pool(ctx: Context<JoinPool>, request_hash: [u8; 32]) -> Result<()> {
-        instructions::handle_join_pool(ctx, request_hash)
-    }
-
     /// Keeper triggers a data fetch after pool threshold is met.
     pub fn trigger_fetch(
         ctx: Context<TriggerFetch>,

@@ -1,14 +1,23 @@
 /**
- * Request Deduplication & Pool Formation
+ * Request Coalescing & Pool Formation — server side.
  *
- * Incoming data requests are hashed to a canonical 32-byte key (v2 — see
- * `hashRequestV2`). Pool state lives in the persistent `PoolStore` so it
- * survives server restart. Within a freshness window a fetched pool is
- * REUSED — that's the whole point of x402-MPP, and what gates the
- * "reuse fee" decay schedule on-chain.
+ * Data-layer half of PreDataPool's Cloudflare-style "fetch once, share N
+ * ways" model. Canonical-key hashing + canonical-request shape live in
+ * `@predatapool/sdk` so client (singleflight) and server (pool dedup) use
+ * the same 32-byte key.
+ *
+ * State here: the persistent `PoolStore` (SQLite). Within a freshness
+ * window a fetched pool is REUSED — that's the coalescing semantic; the
+ * SDK's `Singleflight` adds in-flight fan-in for concurrent callers in
+ * the same process.
  */
 
-import { createHash } from "crypto";
+import {
+  buildCanonicalRequest as buildCanonicalRequestSdk,
+  hashRequestV2 as hashRequestV2Sdk,
+  REQUEST_KEY_DOMAIN,
+  type RequestKeyInput,
+} from "@predatapool/sdk";
 import {
   getStore,
   type PayloadRecord,
@@ -16,28 +25,15 @@ import {
   type PoolStatus,
 } from "./store.js";
 
-/**
- * Domain prefix for canonical request hashing. Bump the version suffix when
- * key fields change to force a clean cache rollover.
- */
-export const REQUEST_KEY_DOMAIN = "DATAPOOL_REQ_V2";
+export { REQUEST_KEY_DOMAIN };
+export type { RequestKeyInput };
 
-export interface RequestKeyInput {
-  /** Base58-encoded provider pubkey from the on-chain provider registry. */
-  providerId: string;
-  /** HTTP method — uppercased before hashing. */
-  method: string;
-  /** Full request URL. Only host+path participate in the key; query is merged with params. */
-  endpoint: string;
-  /** Additional query/body params (override URL query on key collision). */
-  params: Record<string, string>;
-  /**
-   * Buyer's freshness SLO in seconds. Different SLOs are intentionally
-   * different pools — a buyer asking for 60s-fresh data must not be served
-   * out of a pool that promised 1h-fresh data.
-   */
-  freshnessWindowSecs: number;
+/** Wrapper preserving the existing `Buffer` return shape for server callers. */
+export function hashRequestV2(input: RequestKeyInput): Buffer {
+  return Buffer.from(hashRequestV2Sdk(input));
 }
+
+export const buildCanonicalRequest = buildCanonicalRequestSdk;
 
 export interface DataRequest extends RequestKeyInput {
   buyerPubkey: string;
@@ -50,20 +46,6 @@ export type PoolState = PoolRecord;
 const POOL_TIMEOUT_MS = 60_000;
 const DEFAULT_MIN_BUYERS = 2;
 
-function canonicalEndpoint(endpoint: string): { host: string; path: string } {
-  const url = new URL(endpoint);
-  const host = url.hostname.toLowerCase();
-  let path = url.pathname || "/";
-  if (path.length > 1 && path.endsWith("/")) {
-    path = path.slice(0, -1);
-  }
-  return { host, path };
-}
-
-/**
- * Merge URL query string with explicit params (explicit wins). Keys keep
- * their case — query/header semantics commonly preserve case.
- */
 function effectiveParams(
   endpoint: string,
   params: Record<string, string>
@@ -77,63 +59,6 @@ function effectiveParams(
     merged[k] = v;
   }
   return merged;
-}
-
-/**
- * Stable JSON stringify with deterministic key ordering at every depth.
- * Defeats JS engine quirks around integer-like string keys.
- */
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return "[" + value.map(stableStringify).join(",") + "]";
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return (
-    "{" +
-    keys
-      .map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k]))
-      .join(",") +
-    "}"
-  );
-}
-
-export function buildCanonicalRequest(input: RequestKeyInput): {
-  v: 2;
-  provider: string;
-  method: string;
-  path: string;
-  params: Record<string, string>;
-  freshness_window_secs: number;
-} {
-  if (
-    !Number.isInteger(input.freshnessWindowSecs) ||
-    input.freshnessWindowSecs <= 0
-  ) {
-    throw new Error("freshnessWindowSecs must be a positive integer");
-  }
-  if (!input.providerId) {
-    throw new Error("providerId is required");
-  }
-  const { host, path } = canonicalEndpoint(input.endpoint);
-  return {
-    v: 2,
-    provider: input.providerId,
-    method: input.method.trim().toUpperCase(),
-    path: `${host}${path}`,
-    params: effectiveParams(input.endpoint, input.params),
-    freshness_window_secs: input.freshnessWindowSecs,
-  };
-}
-
-export function hashRequestV2(input: RequestKeyInput): Buffer {
-  const canon = buildCanonicalRequest(input);
-  const hasher = createHash("sha256");
-  hasher.update(REQUEST_KEY_DOMAIN);
-  hasher.update("\0");
-  hasher.update(stableStringify(canon));
-  return hasher.digest();
 }
 
 /**

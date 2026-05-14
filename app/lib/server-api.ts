@@ -1,96 +1,42 @@
 /**
- * DataPool client SDK — typed wrapper over the matching server's HTTP API.
+ * App-side HTTP client — thin wrappers around `@predatapool/sdk`'s
+ * `PoolClient` that capture `NEXT_PUBLIC_SERVER_URL` once and expose the
+ * legacy function-shaped API the existing components consume.
  *
- * Stable contract (server publishes `/pool/:hash/metadata` v2). When fields
- * are added the server bumps the `v` discriminator; clients that don't
- * understand a higher version should refuse to verify.
+ * The PoolClient is constructed lazily so SSR + client share the same
+ * instance for a given URL but stay free to override per-call.
  */
+
+import {
+  PoolClient,
+  type DataType,
+  type PoolMetadata as SdkPoolMetadata,
+  type Pool as SdkPool,
+  type PoolsResponse as SdkPoolsResponse,
+  type RequestResponse as SdkRequestResponse,
+  sha256Hex,
+} from "@predatapool/sdk";
+import {
+  DataPoolHashMismatchError,
+  PoolMetadataVersionError,
+} from "@predatapool/sdk";
 
 const SERVER_URL =
   process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
 
-export type PoolStatus = "pending" | "fetching" | "fetched" | "closed";
-
-export type DataType =
-  | "weather"
-  | "gps_rtk"
-  | "map_imagery"
-  | "iot_sensor"
-  | "api_response";
-
-/**
- * Mirror of `server/src/store.ts:PoolRecord` (the row that comes back from
- * `GET /pool/:hash` and `GET /pools`). Stable but verbose — most callers
- * should prefer `PoolMetadata` for read-side flows.
- */
-export interface Pool {
-  requestHashHex: string;
-  endpoint: string;
-  params: Record<string, string>;
-  providerId: string;
-  method: string;
-  freshnessWindowSecs: number;
-  status: PoolStatus;
-  buyers: string[];
-  authorizedBuyers: string[];
-  createdAt: number;
-  fetchedAt?: number;
-  dataHash?: string;
-  minBuyers: number;
-  expiresAt?: number;
+let cachedClient: PoolClient | undefined;
+function client(): PoolClient {
+  if (!cachedClient) cachedClient = new PoolClient({ baseUrl: SERVER_URL });
+  return cachedClient;
 }
 
-export interface PoolsResponse {
-  pools: Pool[];
-  count: number;
-}
-
-export interface RequestResponse {
-  poolHash: string;
-  status: PoolStatus;
-  buyerCount: number;
-  isNewPool: boolean;
-  fetchTriggered: boolean;
-  cacheHit: boolean;
-  payloadUrl?: string;
-  dataHash?: string;
-  expiresAt?: number;
-  currentPriceUsdc: number;
-  currentPriceFormatted: string;
-}
-
-/**
- * Read-side metadata view. The server returns this from
- * `GET /pool/:hash/metadata` — it's the "single endpoint" that gives a
- * client everything needed to verify and consume a request.
- */
-export interface PoolMetadata {
-  v: 2;
-  poolHash: string;
-  status: PoolStatus;
-  cacheHit: boolean;
-  providerId: string;
-  method: string;
-  endpoint: string;
-  freshnessWindowSecs: number;
-  buyerCount: number;
-  minBuyers: number;
-  createdAt: number;
-  fetchedAt?: number;
-  expiresAt?: number;
-  dataHash?: string;
-  storageUri?: string;
-  payloadUrl?: string;
-  envelope?: {
-    version: 0;
-    sourceUrl: string;
-    sourceHash: string;
-    merkleRoot: string;
-    keeperPubkey: string;
-    keeperSignature: string;
-  };
-  paymentSignature?: string;
-}
+export type { DataType };
+export type PoolStatus = SdkPool["status"];
+export type Pool = SdkPool;
+export type PoolsResponse = SdkPoolsResponse;
+export type RequestResponse = SdkRequestResponse;
+export type PoolMetadata = SdkPoolMetadata;
+export { DataPoolHashMismatchError, PoolMetadataVersionError };
 
 export async function submitRequest(
   endpoint: string,
@@ -99,66 +45,32 @@ export async function submitRequest(
   dataType: DataType = "api_response",
   options?: { method?: string; freshnessWindowSecs?: number }
 ): Promise<RequestResponse> {
-  const res = await fetch(`${SERVER_URL}/request`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      endpoint,
-      params,
-      buyerPubkey,
-      dataType,
-      method: options?.method,
-      freshnessWindowSecs: options?.freshnessWindowSecs,
-    }),
+  return client().submitRequest({
+    endpoint,
+    params,
+    buyerPubkey,
+    dataType,
+    method: options?.method,
+    freshnessWindowSecs: options?.freshnessWindowSecs,
   });
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
-  return res.json();
 }
 
-export async function getPools(): Promise<PoolsResponse> {
-  const res = await fetch(`${SERVER_URL}/pools`);
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
-  return res.json();
+export function getPools(): Promise<PoolsResponse> {
+  return client().getPools();
 }
 
-export async function getPool(hash: string): Promise<Pool> {
-  const res = await fetch(`${SERVER_URL}/pool/${hash}`);
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
-  return res.json();
+export function getPool(hash: string): Promise<Pool> {
+  return client().getPool(hash);
 }
 
-/**
- * Fetch the typed metadata view for a pool. Throws on 404.
- * Use this instead of `getPool` for read-side flows that drive UI or
- * the buyer's verify-then-sign path.
- */
-export async function getPoolMetadata(hash: string): Promise<PoolMetadata> {
-  const res = await fetch(`${SERVER_URL}/pool/${hash}/metadata`);
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
-  const meta = (await res.json()) as PoolMetadata;
-  if (meta.v !== 2) {
-    throw new Error(`Unsupported PoolMetadata version: ${meta.v}`);
-  }
-  return meta;
+export function getPoolMetadata(hash: string): Promise<PoolMetadata> {
+  return client().getPoolMetadata(hash);
 }
 
 /**
- * Pull the cached payload bytes referenced by `metadata.payloadUrl` and
- * verify the SHA-256 hash matches `metadata.dataHash`. The hash check is
- * the only thing standing between buyer and a malicious keeper — a buyer
- * MUST run this before signing a settle receipt for the pool.
- *
- * Returns the raw bytes plus the parsed JSON view (when content-type is
- * application/json). Throws `DataPoolHashMismatchError` on mismatch so
- * callers can branch on the failure mode.
+ * Fetch + verify the payload referenced by `metadata.payloadUrl`.
+ * Hash check is the only thing standing between buyer and a malicious keeper.
  */
-export class DataPoolHashMismatchError extends Error {
-  constructor(public readonly expected: string, public readonly actual: string) {
-    super(`data hash mismatch: expected ${expected}, got ${actual}`);
-    this.name = "DataPoolHashMismatchError";
-  }
-}
-
 export async function fetchAndVerify(
   metadata: PoolMetadata
 ): Promise<{ bytes: Uint8Array; data: unknown; verified: true }> {
@@ -167,16 +79,13 @@ export async function fetchAndVerify(
       "PoolMetadata missing payloadUrl or dataHash — pool not yet fetched"
     );
   }
-
   const res = await fetch(metadata.payloadUrl);
   if (!res.ok) throw new Error(`Payload fetch failed: ${res.status}`);
   const bytes = new Uint8Array(await res.arrayBuffer());
-
   const actualHashHex = await sha256Hex(bytes);
   if (actualHashHex !== metadata.dataHash) {
     throw new DataPoolHashMismatchError(metadata.dataHash, actualHashHex);
   }
-
   const contentType = res.headers.get("content-type") ?? "";
   let data: unknown = bytes;
   if (contentType.includes("application/json")) {
@@ -185,18 +94,7 @@ export async function fetchAndVerify(
   return { bytes, data, verified: true };
 }
 
-/** SHA-256 in hex via Web Crypto API — works in browser + Node 20+. */
-export async function sha256Hex(input: Uint8Array): Promise<string> {
-  // Cast through ArrayBufferView — TS 5.7+ tightened BufferSource to require
-  // the buffer slot to be ArrayBuffer (not the generic ArrayBufferLike).
-  const buf = await crypto.subtle.digest(
-    "SHA-256",
-    input as unknown as ArrayBuffer
-  );
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
+export { sha256Hex };
 
 // Decay presets (bps per hour) — must match server/src/decay.ts
 const DECAY_BPS: Record<DataType, number> = {
@@ -207,7 +105,6 @@ const DECAY_BPS: Record<DataType, number> = {
   api_response: 500,
 };
 
-// Client-side price calculation (mirrors server decay formula)
 export function calcCurrentPriceUsdc(
   basePriceUsdc: number,
   fetchedAtMs: number,

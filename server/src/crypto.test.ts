@@ -7,7 +7,6 @@ import {
   POOL_KEY_BYTES,
   WRAPPED_KEY_BYTES,
   decryptPayload,
-  ed25519PubToX25519Pub,
   encryptPayload,
   keyCommitment,
   newPoolKey,
@@ -86,17 +85,6 @@ test("unwrap fails for the wrong recipient secret", () => {
   const k = newPoolKey();
   const wrapped = wrapPoolKey(k, aPub);
   assert.throws(() => unwrapPoolKey(wrapped, bSec));
-});
-
-test("ed25519 pub → x25519 pub conversion is deterministic", () => {
-  // Pick an arbitrary 32-byte ed25519 pubkey-shaped buffer.
-  // (Real Solana pubkeys are valid ed25519 points; for the conversion
-  // function we just need 32 bytes — the curve helper handles it.)
-  const ed = new Uint8Array(32).fill(0x01);
-  const x1 = ed25519PubToX25519Pub(ed);
-  const x2 = ed25519PubToX25519Pub(ed);
-  assert.equal(x1.length, 32);
-  assert.deepEqual(x1, x2);
 });
 
 test("end-to-end: encrypt + wrap → unwrap + decrypt", () => {

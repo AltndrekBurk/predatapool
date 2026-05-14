@@ -1,11 +1,46 @@
 # PreDataPool
 
-PreDataPool is a machine-to-machine data reuse layer for IoT devices, edge
-workers, vehicles, and autonomous agents that keep asking for the same public
-data.
+**Solana-native, Cloudflare-style request coalescing for DePIN, IoT, and edge
+compute.** When N agents on the same canonical request all need the same
+public data, PreDataPool collapses them into one upstream fetch + one provider
+payment, serves an encrypted-and-verifiable reuse to every other caller, and
+settles paid reuse on Solana in a single batch.
 
-The goal is simple: one canonical request, one upstream fetch/payment, one
-encrypted cache entry, and verified reuse for later consumers.
+Think of it as the *"fetch once, share N ways"* pattern Cloudflare gives
+traditional web traffic — adapted for autonomous machines that pay for the
+data they consume.
+
+## Why this exists
+
+The M2M economy is full of devices that independently ask for the *same*
+public payload: a weather sensor swarm querying the same forecast, a fleet of
+edge workers reading the same on-chain account, a DePIN cluster pulling the
+same map tile. Each duplicate request burns:
+
+- provider compute
+- bandwidth
+- rate-limit budget
+- duplicate upstream payment (x402 / MPP / API key)
+- downstream verification effort
+
+Cloudflare solves this for web traffic with **request coalescing**: concurrent
+requests for the same URL share a single origin fetch. PreDataPool does the
+same thing for paid, verifiable M2M data — with Solana as the settlement and
+provenance layer so reuse is auditable and providers still get paid for the
+shared work.
+
+## Coalescing model (honest framing)
+
+The MVP coalesces at the **data layer**, not the literal HTTP layer:
+
+- Same canonical request within a freshness window → same pool → same fetch.
+- Concurrent callers join the pool and currently **poll for completion**
+  (SDK fan-in / promise-sharing is a tracked TODO — see `AGENTS.md §5.3`).
+- Settlement is genuinely batched: N off-chain signed receipts → 1 on-chain
+  `settle_receipt` flow with compressed BuyerSlot leaves (Light Protocol).
+
+So "coalescing" here describes the work-sharing semantics; the caller-side UX
+is still poll-based until the SDK promise layer lands.
 
 ## What It Solves
 

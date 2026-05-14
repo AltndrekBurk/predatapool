@@ -2,6 +2,7 @@
   "name": "datapool-server",
   "version": "0.1.0",
   "description": "DataPool off-chain matching server",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -14,6 +15,10 @@
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@lightprotocol/stateless.js": "^0.23.3",
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.0.0",
+    "@predatapool/sdk": "^0.1.0",
     "@solana/kit": "^6.5.0",
     "@solana/mpp": "^0.1.0",
     "@solana/spl-token": "^0.4.9",

@@ -36,10 +36,18 @@ Do not invent missing folders or rewrite the repo layout unless explicitly asked
 
 ## 2. What This Project Is
 
-PreDataPool is a Solana-native public data reuse layer for machine-to-machine
-payments. It groups identical or overlapping requests from AI agents, IoT
-devices, vehicles, and edge devices; performs one verified fetch when possible;
-serves encrypted reuse; and records paid reuse on Solana.
+PreDataPool is a **Solana-native request coalescing layer for DePIN, IoT, and
+edge compute** — the "Cloudflare-style fetch-once-share-N-ways" pattern
+adapted for autonomous machines that pay for the data they consume. When
+multiple agents target the same canonical public request, PreDataPool
+collapses them into one upstream fetch + one provider payment, serves an
+encrypted-and-verifiable reuse to every other caller, and settles paid reuse
+on Solana in a single batch.
+
+Note on the word "coalescing": the MVP coalesces at the **data layer** (same
+canonical request + fresh AoI = same pool + same payload + same upstream
+payment). The caller-side UX is currently poll-based — turning that into a
+shared in-flight promise is the SDK fan-in work tracked in §5.3.
 
 MVP scope:
 

@@ -1,8 +1,13 @@
 {
   "name": "predatapool-app",
-  "description": "M2M data reuse layer for IoT and edge workloads",
+  "description": "Solana-native request coalescing for DePIN, IoT, and edge compute — verified data reuse for the M2M economy",
   "keywords": [
     "predatapool",
+    "request-coalescing",
+    "depin",
+    "iot",
+    "edge",
+    "m2m",
     "x402",
     "solana",
     "anchor",
@@ -21,25 +26,32 @@
   },
   "version": "0.0.0",
   "private": true,
+  "workspaces": [
+    "server",
+    "sdk"
+  ],
   "scripts": {
     "anchor-build": "cd anchor && anchor build",
     "anchor-test": "cd anchor && anchor test --skip-deploy",
-    "graph:analyze": "node tools/anchor-graph-analyzer.mjs",
-    "graph:inject": "node tools/inject-edges.mjs",
-    "graph:update": "npm run graph:analyze && npm run graph:inject",
-    "build": "next build",
+    "build": "npm run sdk:build && next build",
     "ci": "npm run build && npm run lint && npm run format:check",
     "codama:js": "codama run js",
     "dev": "next dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint",
-    "setup": "npm run anchor-build && npm run codama:js",
-    "start": "next start"
+    "sdk:build": "npm run -w @predatapool/sdk build",
+    "sdk:test": "npm run -w @predatapool/sdk test",
+    "server:dev": "npm run -w datapool-server dev",
+    "server:test": "npm run -w datapool-server test",
+    "setup": "npm run sdk:build && npm run anchor-build && npm run codama:js",
+    "start": "next start",
+    "test": "npm run sdk:test && npm run server:test"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
+    "@predatapool/sdk": "^0.1.0",
     "@solana-program/token": "^0.13.0",
     "@solana/kit": "^6.3.0",
     "@solana/kit-client-rpc": "^0.7.0",
