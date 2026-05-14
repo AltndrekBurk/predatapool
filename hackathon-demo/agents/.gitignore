@@ -1,2 +1,0 @@
-# Agent keypairs contain private keys — never commit
-*.json

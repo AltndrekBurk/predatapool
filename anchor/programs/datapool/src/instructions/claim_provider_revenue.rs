@@ -57,13 +57,14 @@ pub fn handle_claim_provider_revenue(
     let pool = &ctx.accounts.pool;
     let now = Clock::get()?.unix_timestamp;
 
-    // Approximate post-fetch revenue (mirrors claim_rebate's approach).
-    // Sponsors paid base_price; everyone after pays decayed price.
-    let pre_fetch_collected = (pool.base_price_usdc as u128)
-        .checked_mul(pool.buyer_count as u128)
-        .unwrap_or(0);
-    let total = pool.total_collected as u128;
-    let post_fetch_revenue = total.saturating_sub(pre_fetch_collected) as u64;
+    // Post-fetch revenue = everything collected minus what sponsors paid in.
+    // `pre_fetch_collected` is maintained by settle_receipt for exactly this
+    // purpose (claim_rebate uses the same field). Deriving via
+    // `base_price * buyer_count` over-counts because buyer_count lumps
+    // pre- and post-fetch joins together.
+    let post_fetch_revenue = pool
+        .total_collected
+        .saturating_sub(pool.pre_fetch_collected);
 
     // Provider's currently-effective share, decayed by hours-since-fetch.
     let share_bps = pool.provider_share_bps_now(now);

@@ -34,9 +34,10 @@ import {
   type HashWithTree,
   type ValidityProof,
 } from "@lightprotocol/stateless.js";
+import { createRequire } from "node:module";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const IDL = require("../../anchor/target/idl/datapool.json");
+const requireFromHere = createRequire(import.meta.url);
+const IDL = requireFromHere("../../anchor/target/idl/datapool.json");
 
 const PROGRAM_ID = new PublicKey(
   process.env.PROGRAM_ID ?? "62pKxmwZxC7SA4TSYW7FYAxewRU6UXKT2bh7xC55Kg4D"

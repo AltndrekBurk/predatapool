@@ -1,92 +1,71 @@
 /**
- * JoinReceipt — off-chain signed message authorizing the protocol to debit
- * a buyer's pre-approved USDC allowance into a specific pool.
+ * JoinReceipt — server-side adapter over `@predatapool/sdk`'s receipt.
  *
- * Canonical wire format (104 bytes, little-endian):
- *   [0..16]   domain prefix "DATAPOOL_JOIN_V1" (ASCII, no null)
- *   [16..48]  pool_hash       32 bytes
- *   [48..80]  buyer pubkey    32 bytes
- *   [80..88]  max_price       u64 LE
- *   [88..96]  nonce           u64 LE
- *   [96..104] deadline        i64 LE (unix seconds)
+ * The SDK keeps the canonical 104-byte wire form pure (uses `@solana/kit`
+ * `Address` strings). Server code wants `PublicKey` for keeper / Anchor
+ * interop, so we adapt at the boundary.
  *
- * The buyer signs this exact byte string with Ed25519. The on-chain
- * settle_batch instruction verifies via Solana's Ed25519 precompile, so the
- * server never needs to re-sign anything — it just aggregates receipts.
- *
- * The domain prefix is critical: without it a malicious counterparty could
- * trick a buyer into signing a message that's also valid in another protocol.
+ * Wire format is byte-identical — the buyer signs the SDK's canonical bytes,
+ * the server's Ed25519 verify checks the same trailing 104 bytes.
  */
 
 import { PublicKey } from "@solana/web3.js";
+import {
+  RECEIPT_BYTES,
+  RECEIPT_DOMAIN,
+  RECEIPT_DOMAIN_LEN,
+  serializeReceipt as serializeReceiptSdk,
+  isReceiptFresh as isReceiptFreshSdk,
+  type JoinReceipt as SdkJoinReceipt,
+} from "@predatapool/sdk";
+import type { Address } from "@solana/kit";
 
-export const RECEIPT_DOMAIN = "DATAPOOL_JOIN_V1";
-export const RECEIPT_DOMAIN_LEN = 16;
-export const RECEIPT_BYTES = 104;
+export { RECEIPT_BYTES, RECEIPT_DOMAIN, RECEIPT_DOMAIN_LEN };
 
 export interface JoinReceipt {
-  poolHash: Uint8Array; // 32 bytes
+  poolHash: Uint8Array;
   buyer: PublicKey;
-  maxPrice: bigint; // u64 — micro-USDC
-  nonce: bigint; // u64 — unique per (buyer, pool)
-  deadline: bigint; // i64 — unix seconds, receipt invalid after this
+  maxPrice: bigint;
+  nonce: bigint;
+  deadline: bigint;
 }
 
 export interface SignedReceipt {
   receipt: JoinReceipt;
-  signature: Uint8Array; // 64 bytes ed25519
+  signature: Uint8Array;
+}
+
+function toSdkReceipt(r: JoinReceipt): SdkJoinReceipt {
+  return {
+    poolHash: r.poolHash,
+    buyer: r.buyer.toBase58() as Address,
+    maxPrice: r.maxPrice,
+    nonce: r.nonce,
+    deadline: r.deadline,
+  };
 }
 
 export function serializeReceipt(r: JoinReceipt): Uint8Array {
-  if (r.poolHash.length !== 32) {
-    throw new Error(`poolHash must be 32 bytes, got ${r.poolHash.length}`);
-  }
+  return serializeReceiptSdk(toSdkReceipt(r));
+}
 
-  const buf = new Uint8Array(RECEIPT_BYTES);
-  const view = new DataView(buf.buffer);
-
-  // Domain prefix
-  const domainBytes = new TextEncoder().encode(RECEIPT_DOMAIN);
-  if (domainBytes.length !== RECEIPT_DOMAIN_LEN) {
-    throw new Error("domain prefix must be exactly 16 bytes");
-  }
-  buf.set(domainBytes, 0);
-
-  // pool_hash
-  buf.set(r.poolHash, 16);
-
-  // buyer pubkey
-  buf.set(r.buyer.toBytes(), 48);
-
-  // max_price (u64 LE)
-  view.setBigUint64(80, r.maxPrice, true);
-
-  // nonce (u64 LE)
-  view.setBigUint64(88, r.nonce, true);
-
-  // deadline (i64 LE)
-  view.setBigInt64(96, r.deadline, true);
-
-  return buf;
+export function isReceiptFresh(
+  r: JoinReceipt,
+  nowSec: number = Math.floor(Date.now() / 1000)
+): boolean {
+  return isReceiptFreshSdk(toSdkReceipt(r), nowSec);
 }
 
 export function deserializeReceipt(bytes: Uint8Array): JoinReceipt {
   if (bytes.length !== RECEIPT_BYTES) {
     throw new Error(`expected ${RECEIPT_BYTES} bytes, got ${bytes.length}`);
   }
-
   const decoder = new TextDecoder();
   const domain = decoder.decode(bytes.slice(0, RECEIPT_DOMAIN_LEN));
   if (domain !== RECEIPT_DOMAIN) {
     throw new Error(`domain mismatch: ${domain}`);
   }
-
-  const view = new DataView(
-    bytes.buffer,
-    bytes.byteOffset,
-    bytes.byteLength
-  );
-
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return {
     poolHash: bytes.slice(16, 48),
     buyer: new PublicKey(bytes.slice(48, 80)),
@@ -94,13 +73,4 @@ export function deserializeReceipt(bytes: Uint8Array): JoinReceipt {
     nonce: view.getBigUint64(88, true),
     deadline: view.getBigInt64(96, true),
   };
-}
-
-/**
- * Returns true if the receipt is currently valid (deadline not passed).
- * Stale receipts must be rejected by the server before they reach the chain
- * — the on-chain check is a backstop, not the primary gate.
- */
-export function isReceiptFresh(r: JoinReceipt, nowSec: number = Math.floor(Date.now() / 1000)): boolean {
-  return Number(r.deadline) >= nowSec;
 }

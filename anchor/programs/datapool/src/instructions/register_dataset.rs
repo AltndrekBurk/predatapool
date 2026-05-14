@@ -36,6 +36,14 @@ pub fn handle_register_dataset(
         storage_uri.len() <= DataPool::STORAGE_URI_MAX_LEN,
         DataPoolError::StorageUriTooLong
     );
+    // Non-replayable: once `storage_uri` is populated, the dataset is bound to
+    // the keeper's first registration. A second call would silently overwrite
+    // key_commitment / merkle_root / storage_uri behind buyers who already
+    // signed receipts against the original envelope.
+    require!(
+        ctx.accounts.pool.storage_uri.is_empty(),
+        DataPoolError::AlreadyRegistered
+    );
 
     let pool = &mut ctx.accounts.pool;
 

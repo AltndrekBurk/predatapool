@@ -124,6 +124,15 @@ pub fn handle_settle_receipt<'info>(
         receipt.pool_hash == ctx.accounts.pool.request_hash,
         DataPoolError::ReceiptPoolMismatch
     );
+    // Pool freshness expiry — `expires_at_ms == 0` means register_dataset has
+    // not run yet (we're still in the pre-fetch sponsor window; expiry doesn't
+    // apply). Once `expires_at_ms` is set, settling past it would commit a
+    // buyer slot tied to a stale data_hash.
+    require!(
+        ctx.accounts.pool.expires_at_ms == 0
+            || (now as i64).saturating_mul(1000) <= ctx.accounts.pool.expires_at_ms,
+        DataPoolError::PoolExpired
+    );
 
     verify_ed25519_authorization(&ctx.accounts.instructions_sysvar, &receipt)?;
 

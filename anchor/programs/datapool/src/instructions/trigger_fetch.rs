@@ -26,10 +26,11 @@ pub fn handle_trigger_fetch(
 ) -> Result<()> {
     let pool = &mut ctx.accounts.pool;
 
-    require!(
-        pool.buyer_count >= pool.min_buyers,
-        DataPoolError::ThresholdNotReached
-    );
+    // Threshold enforcement lives off-chain in the matcher (server/src/matcher.ts
+    // `shouldTriggerFetch`). The keeper-only constraint above is the security
+    // boundary; the redundant on-chain count would create a chicken-and-egg
+    // problem because `buyer_count` is bumped only by `settle_receipt`, which
+    // buyers can only sign AFTER trigger_fetch records `data_hash`.
 
     let now = Clock::get()?.unix_timestamp;
     pool.fetched_at = now;

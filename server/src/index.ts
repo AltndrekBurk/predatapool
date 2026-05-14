@@ -16,7 +16,6 @@ import {
   triggerFetchOnChain,
   registerDatasetOnChain,
   initializePoolOnChain,
-  settleReceiptOnChain,
   loadKeeper,
   loadKeeperKitSigner,
   getKeeperRpcUrl,
@@ -25,7 +24,6 @@ import { lookupProvider } from "./providers.js";
 import type { KeyPairSigner } from "@solana/kit";
 import {
   acceptReceipt,
-  drainBatch,
   getPendingBatch,
   listPoolsWithPending,
   ReceiptError,
@@ -41,6 +39,11 @@ import {
 } from "./crypto.js";
 import { buildDataEnvelopeV0 } from "./envelope.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import {
+  PRUNE_INTERVAL_MS,
+  SETTLE_INTERVAL_MS,
+  startScheduler,
+} from "./scheduler.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -79,11 +82,33 @@ function assertPublicPoolEligible(input: {
 }
 
 /**
- * Tracks pending on-chain `initialize_pool` txns by pool hash so we can
- * await them before subsequent instructions (trigger_fetch, register_dataset).
- * The on-chain pool must exist before those run.
+ * Boot-time env validation — fail fast instead of crashing 30 seconds in
+ * when the keeper tries to call into a missing dependency.
  */
-const pendingInits = new Map<string, Promise<unknown>>();
+function validateEnv(): void {
+  if (process.env.NODE_ENV === "test") return;
+  if (!process.env.SERVER_BASE_URL) {
+    console.warn(
+      "[server] SERVER_BASE_URL not set — on-chain storage_uri will point at " +
+        "localhost. Set it before running outside dev."
+    );
+  }
+  if (!process.env.PHOTON_RPC_URL) {
+    console.warn(
+      "[server] PHOTON_RPC_URL not set — settle_receipt will fail at runtime " +
+        "(Light Protocol requires Photon). Set a Helius/Photon endpoint to " +
+        "settle compressed BuyerSlot leaves."
+    );
+  }
+}
+validateEnv();
+
+/**
+ * One in-flight fetch task per canonical pool hash. Guards against two
+ * concurrent /request callers both crossing `shouldTriggerFetch=true` and
+ * racing to initialize + fetch the same pool. Cleared in `finally`.
+ */
+const inFlightFetches = new Map<string, Promise<void>>();
 
 /**
  * Lazy-loaded keeper signer for MPP payments. Loaded on first use so the
@@ -100,6 +125,126 @@ async function getMppSigner(): Promise<KeyPairSigner> {
 
 app.use(cors());
 app.use(express.json());
+
+/**
+ * Lazy fetch pipeline for a single pool. Runs in the background once the
+ * matcher has confirmed the off-chain threshold is met. On-chain
+ * `initialize_pool` is deferred to this moment — pools that never cross
+ * threshold never burn rent.
+ *
+ *   1. initialize_pool          ← lazy
+ *   2. fetch upstream            (free / API key / MPP)
+ *   3. encrypt + envelope        (K_pool stored server-side)
+ *   4. trigger_fetch             (writes data_hash on-chain; no threshold check)
+ *   5. register_dataset          (publishes storage_uri + key_commitment)
+ *   6. markFetched off-chain     (status flips, buyers can poll → sign receipts)
+ *
+ * The receipt-settlement scheduler (scheduler.ts) handles step 7 — draining
+ * signed receipts → settle_receipt → addAuthorizedBuyer. That's the gate
+ * the `/pool/:hash/key` endpoint checks.
+ */
+async function runFetchPipeline(args: {
+  poolHashHex: string;
+  endpoint: string;
+  params: Record<string, string>;
+  agreement: ReturnType<typeof lookupProvider>;
+}): Promise<void> {
+  const { poolHashHex, endpoint, params, agreement } = args;
+  try {
+    // 1) lazy on-chain initialize
+    try {
+      await initializePoolOnChain({
+        requestHashHex: poolHashHex,
+        basePriceUsdc: agreement.basePriceUsdc,
+        minBuyers: agreement.minBuyers,
+        decayBpsPerHour: agreement.buyerDecayBpsPerHour,
+        provider: agreement.provider,
+        providerShareBps: agreement.providerShareBps,
+        providerDecayBpsPerHour: agreement.providerDecayBpsPerHour,
+        usdcMint: USDC_MINT,
+      });
+    } catch (err) {
+      // Pool may already exist from a prior session — log and continue. The
+      // subsequent trigger_fetch will fail loudly if the pool truly doesn't
+      // exist.
+      console.error(
+        `[pipeline] initialize_pool for ${poolHashHex.slice(0, 8)}...:`,
+        (err as Error).message
+      );
+    }
+
+    // 2) fetch upstream
+    markFetching(poolHashHex);
+    const fetchOptions = {
+      upstream: agreement.upstream,
+      rpcUrl: getKeeperRpcUrl(),
+      mppSigner:
+        agreement.upstream.kind === "mpp" ? await getMppSigner() : undefined,
+    };
+    const result = await fetchData(endpoint, params, fetchOptions);
+    const dataHashHex = result.dataHash.toString("hex");
+
+    // 3) encrypt + envelope + store
+    const fetchedAt = Date.now();
+    const expiresAt = fetchedAt + agreement.freshnessWindowSecs * 1000;
+    const plaintext = result.rawBody;
+    const k = newPoolKey();
+    const enc = encryptPayload(k, plaintext);
+    const registerKeyCommitment = Buffer.from(deriveKeyCommitment(k));
+    const envelope = buildDataEnvelopeV0({
+      payload: plaintext,
+      sourceUrl: result.source,
+      fetchedAt,
+      expiresAt,
+      keeper: loadKeeper(),
+    });
+    getStore().putPayload({
+      requestHashHex: poolHashHex,
+      ciphertext: Buffer.from(enc.ciphertext),
+      iv: Buffer.from(enc.iv),
+      poolKey: Buffer.from(k),
+      keyCommitment: registerKeyCommitment,
+      envelopeVersion: envelope.version,
+      sourceUrl: envelope.sourceUrl,
+      sourceHash: envelope.sourceHash,
+      merkleRoot: envelope.merkleRoot,
+      keeperPubkey: envelope.keeperPubkey,
+      keeperSignature: envelope.keeperSignature,
+      contentType: result.contentType || "application/octet-stream",
+      fetchedAt,
+      expiresAt,
+      paymentSignature: result.paymentSignature,
+    });
+
+    // 4) trigger_fetch (records data_hash; off-chain threshold already checked)
+    const storageUri = `${SERVER_BASE_URL}/pool/${poolHashHex}/payload`;
+    if (storageUri.length > STORAGE_URI_MAX_LEN) {
+      throw new Error(
+        `storage_uri ${storageUri.length} > ${STORAGE_URI_MAX_LEN} bytes — ` +
+          "shorten SERVER_BASE_URL"
+      );
+    }
+    await triggerFetchOnChain(poolHashHex, dataHashHex);
+
+    // 5) register_dataset
+    await registerDatasetOnChain(poolHashHex, storageUri, registerKeyCommitment, {
+      sourceHash: envelope.sourceHash,
+      expiresAt,
+      merkleRoot: envelope.merkleRoot,
+      keeperSignature: envelope.keeperSignature,
+    });
+
+    // 6) flip off-chain status — buyers can now poll metadata + sign receipts
+    markFetched(poolHashHex, dataHashHex);
+
+    console.log(
+      `[pipeline] Pool ${poolHashHex.slice(0, 8)}... fetched + registered. ` +
+        `Data hash: ${dataHashHex.slice(0, 16)}...`
+    );
+  } catch (err) {
+    console.error(`[pipeline] Fetch failed for ${poolHashHex.slice(0, 8)}:`, err);
+  }
+}
 
 app.post("/request", async (req, res) => {
   try {
@@ -130,131 +275,18 @@ app.post("/request", async (req, res) => {
         body.freshnessWindowSecs ?? earlyAgreement.freshnessWindowSecs,
     });
 
-    // New off-chain pool → initialize the matching on-chain DataPool so future
-    // buyers can call join_pool and the keeper can later trigger_fetch.
-    // Fire-and-forget; we track the promise and await it before trigger_fetch.
-    if (isNewPool) {
+    // Lazy on-chain initialize + fetch flow runs only when threshold is met.
+    // Two concurrent /request callers can both observe shouldTriggerFetch=true
+    // for the same pool — `inFlightFetches` dedups them.
+    if (shouldTriggerFetch && !inFlightFetches.has(pool.requestHashHex)) {
       const agreement = earlyAgreement;
-      const initPromise = initializePoolOnChain({
-        requestHashHex: pool.requestHashHex,
-        basePriceUsdc: agreement.basePriceUsdc,
-        minBuyers: agreement.minBuyers,
-        decayBpsPerHour: agreement.buyerDecayBpsPerHour,
-        provider: agreement.provider,
-        providerShareBps: agreement.providerShareBps,
-        providerDecayBpsPerHour: agreement.providerDecayBpsPerHour,
-        usdcMint: USDC_MINT,
-      }).catch((err) => {
-        // Pool may already exist from a prior session — log and continue.
-        console.error(
-          `[server] initialize_pool failed for ${pool.requestHashHex.slice(0, 8)}...:`,
-          (err as Error).message
-        );
-      });
-      pendingInits.set(pool.requestHashHex, initPromise);
-    }
-
-    if (shouldTriggerFetch) {
-      markFetching(pool.requestHashHex);
-
-      (async () => {
-        try {
-          // Ensure on-chain pool exists before trigger_fetch runs.
-          const init = pendingInits.get(pool.requestHashHex);
-          if (init) {
-            await init;
-            pendingInits.delete(pool.requestHashHex);
-          }
-
-          const fetchOptions = {
-            upstream: earlyAgreement.upstream,
-            rpcUrl: getKeeperRpcUrl(),
-            mppSigner:
-              earlyAgreement.upstream.kind === "mpp"
-                ? await getMppSigner()
-                : undefined,
-          };
-          const result = await fetchData(
-            body.endpoint,
-            body.params ?? {},
-            fetchOptions
-          );
-          const dataHashHex = result.dataHash.toString("hex");
-          markFetched(pool.requestHashHex, dataHashHex);
-
-          // Encrypt the payload AT-REST. Server holds K_pool; buyers receive
-          // ECIES-wrapped K_pool from /pool/:hash/key after signing an attestation.
-          // TTL matches the pool's freshness window — prune drops expired rows.
-          const fresh = getPool(pool.requestHashHex);
-          let registerKeyCommitment = Buffer.alloc(32, 0);
-          if (fresh?.fetchedAt && fresh.expiresAt) {
-            const plaintext = result.rawBody;
-            const k = newPoolKey();
-            const enc = encryptPayload(k, plaintext);
-            registerKeyCommitment = Buffer.from(deriveKeyCommitment(k));
-            const envelope = buildDataEnvelopeV0({
-              payload: plaintext,
-              sourceUrl: result.source,
-              fetchedAt: fresh.fetchedAt,
-              expiresAt: fresh.expiresAt,
-              keeper: loadKeeper(),
-            });
-            getStore().putPayload({
-              requestHashHex: pool.requestHashHex,
-              ciphertext: Buffer.from(enc.ciphertext),
-              iv: Buffer.from(enc.iv),
-              poolKey: Buffer.from(k),
-              keyCommitment: registerKeyCommitment,
-              envelopeVersion: envelope.version,
-              sourceUrl: envelope.sourceUrl,
-              sourceHash: envelope.sourceHash,
-              merkleRoot: envelope.merkleRoot,
-              keeperPubkey: envelope.keeperPubkey,
-              keeperSignature: envelope.keeperSignature,
-              contentType: result.contentType || "application/octet-stream",
-              fetchedAt: fresh.fetchedAt,
-              expiresAt: fresh.expiresAt,
-              paymentSignature: result.paymentSignature,
-            });
-          }
-
-          // The on-chain `storage_uri` must be a resolvable URL — buyers
-          // read it from the chain and fetch bytes from there. The payment
-          // signature is recorded off-chain (returned in metadata + payload
-          // headers) since it would push us past the 128-byte cap.
-          const storageUri = `${SERVER_BASE_URL}/pool/${pool.requestHashHex}/payload`;
-          if (storageUri.length > STORAGE_URI_MAX_LEN) {
-            throw new Error(
-              `storage_uri ${storageUri.length} > ${STORAGE_URI_MAX_LEN} bytes — ` +
-                "shorten SERVER_BASE_URL"
-            );
-          }
-
-          await triggerFetchOnChain(pool.requestHashHex, dataHashHex);
-          const payloadRecord = getStore().getPayload(pool.requestHashHex);
-          if (!payloadRecord) {
-            throw new Error("payload missing after encryption");
-          }
-          await registerDatasetOnChain(
-            pool.requestHashHex,
-            storageUri,
-            registerKeyCommitment,
-            {
-              sourceHash: payloadRecord.sourceHash,
-              expiresAt: payloadRecord.expiresAt,
-              merkleRoot: payloadRecord.merkleRoot,
-              keeperSignature: payloadRecord.keeperSignature,
-            }
-          );
-
-          console.log(
-            `[server] Pool ${pool.requestHashHex.slice(0, 8)}... fetched & registered. ` +
-              `Data hash: ${dataHashHex.slice(0, 16)}...`
-          );
-        } catch (err) {
-          console.error(`[server] Fetch failed:`, err);
-        }
-      })();
+      const task = runFetchPipeline({
+        poolHashHex: pool.requestHashHex,
+        endpoint: body.endpoint,
+        params: body.params ?? {},
+        agreement,
+      }).finally(() => inFlightFetches.delete(pool.requestHashHex));
+      inFlightFetches.set(pool.requestHashHex, task);
     }
 
     const preset = DECAY_PRESETS[body.dataType ?? "api_response"];
@@ -508,7 +540,10 @@ app.post("/receipt", (req, res) => {
       signedMessage: new Uint8Array(Buffer.from(body.signedMessage, "hex")),
       signature: new Uint8Array(Buffer.from(body.signature, "hex")),
     });
-    getStore().addAuthorizedBuyer(result.poolHashHex, body.buyer);
+    // Authorization is granted by the scheduler AFTER settle_receipt
+    // succeeds on-chain (see scheduler.tickSettle). A buyer who only posts
+    // a signed receipt cannot get K_pool from /pool/:hash/key until their
+    // BuyerSlot is committed on-chain.
 
     res.status(200).json({
       ok: true,
@@ -563,78 +598,8 @@ app.get("/health", (_req, res) => {
   });
 });
 
-/**
- * Settlement scheduler — drains pending receipts and submits each as a
- * settle_receipt transaction. Runs every SETTLE_INTERVAL_MS without
- * blocking the request path: buyer-facing endpoints (POST /receipt) ack
- * immediately and never wait on the chain.
- *
- * One in-flight settlement per pool at a time prevents nonce-collision
- * races between concurrent settle_receipt txs targeting the same buyer.
- */
-const SETTLE_INTERVAL_MS = Number(process.env.SETTLE_INTERVAL_MS ?? 5000);
-const settling = new Set<string>();
-
-async function tickSettle(): Promise<void> {
-  const pools = listPoolsWithPending();
-  for (const poolHashHex of pools) {
-    if (settling.has(poolHashHex)) continue;
-    settling.add(poolHashHex);
-
-    (async () => {
-      try {
-        // Wait for any in-flight initialize_pool — settle_receipt needs the
-        // on-chain DataPool to exist.
-        const init = pendingInits.get(poolHashHex);
-        if (init) {
-          await init;
-          pendingInits.delete(poolHashHex);
-        }
-
-        const receipts = drainBatch(poolHashHex);
-        for (const r of receipts) {
-          try {
-            await settleReceiptOnChain(r);
-          } catch (err) {
-            console.error(
-              `[scheduler] settle_receipt failed for buyer ` +
-                `${r.receipt.buyer.toBase58().slice(0, 8)}... pool ` +
-                `${poolHashHex.slice(0, 8)}...: ${(err as Error).message}`
-            );
-            // Receipt is dropped — buyer can sign a fresh one with a new
-            // nonce. We don't requeue to avoid amplifying transient errors.
-          }
-        }
-      } finally {
-        settling.delete(poolHashHex);
-      }
-    })();
-  }
-}
-
-setInterval(() => {
-  void tickSettle();
-}, SETTLE_INTERVAL_MS);
-
-/**
- * Periodic prune — drops pools + payloads whose freshness window has
- * elapsed. Without this the cache grows unbounded; with it, expired keys
- * vacate so the next request to the same canonical key triggers a fresh
- * fetch (and a fresh provider payment).
- */
-const PRUNE_INTERVAL_MS = Number(process.env.PRUNE_INTERVAL_MS ?? 30_000);
-setInterval(() => {
-  try {
-    const { pools, payloads } = getStore().prune(Date.now());
-    if (pools || payloads) {
-      console.log(`[prune] dropped ${pools} pool(s), ${payloads} payload(s)`);
-    }
-  } catch (err) {
-    console.error("[prune] error:", err);
-  }
-}, PRUNE_INTERVAL_MS);
-
 app.listen(PORT, () => {
+  startScheduler();
   console.log(`DataPool matching server running on http://localhost:${PORT}`);
   console.log(`  POST /request               — submit a data request`);
   console.log(`  POST /receipt               — submit a signed JoinReceipt`);

@@ -314,4 +314,67 @@ mod tests {
         // Total paid never exceeds entitlement
         assert!(pool.provider_paid <= entitlement_2);
     }
+
+    // ── Provider revenue: pre_fetch_collected fix ────────────────────────
+    // The pre-fix `claim_provider_revenue` derived pre-fetch revenue as
+    // `base_price * buyer_count`. That over-counts because buyer_count lumps
+    // pre- and post-fetch joins together → it eats into the post-fetch pool
+    // and shrinks the provider's claim. The fix reads the dedicated
+    // `pre_fetch_collected` field that settle_receipt maintains.
+
+    #[test]
+    fn test_provider_claim_uses_pre_fetch_collected_field() {
+        // Realistic mixed pool:
+        //   - 2 sponsors paid base=1_000_000 each (pre_fetch_collected=2_000_000)
+        //   - 3 post-fetch buyers paid decayed price=500_000 each (post=1_500_000)
+        //   - total_collected = 3_500_000, buyer_count = 5
+        let mut pool =
+            make_pool_with_provider(1_000_000, 100, T0, 3_500_000, 5, 6000, 0);
+        pool.pre_fetch_collected = 2_000_000;
+
+        // FIXED derivation: post = total - pre_fetch_collected
+        let post_fetch_revenue = pool
+            .total_collected
+            .saturating_sub(pool.pre_fetch_collected);
+        assert_eq!(post_fetch_revenue, 1_500_000);
+        let entitlement = (post_fetch_revenue as u128 * 6000 / 10000) as u64;
+        assert_eq!(entitlement, 900_000);
+
+        // OLD BUGGY derivation: base_price * buyer_count == 1M * 5 == 5M,
+        // total - 5M saturating_sub → 0 → entitlement = 0 (provider robbed).
+        let buggy_pre = (pool.base_price_usdc as u128)
+            .checked_mul(pool.buyer_count as u128)
+            .unwrap();
+        let buggy_post =
+            (pool.total_collected as u128).saturating_sub(buggy_pre) as u64;
+        assert_eq!(buggy_post, 0);
+    }
+
+    #[test]
+    fn test_provider_claim_correct_with_only_post_fetch_buyers() {
+        // No sponsors → pre_fetch_collected stays 0 → post = total.
+        let pool =
+            make_pool_with_provider(1_000_000, 100, T0, 1_500_000, 3, 5000, 0);
+        let post_fetch_revenue = pool
+            .total_collected
+            .saturating_sub(pool.pre_fetch_collected);
+        assert_eq!(post_fetch_revenue, 1_500_000);
+        let entitlement = (post_fetch_revenue as u128 * 5000 / 10000) as u64;
+        assert_eq!(entitlement, 750_000);
+    }
+
+    #[test]
+    fn test_provider_claim_zero_when_only_sponsors() {
+        // All revenue is from sponsors (pre-fetch). claim_rebate's job,
+        // not claim_provider_revenue's. Provider entitlement = 0.
+        let mut pool =
+            make_pool_with_provider(1_000_000, 100, T0, 2_000_000, 2, 6000, 0);
+        pool.pre_fetch_collected = 2_000_000;
+        let post_fetch_revenue = pool
+            .total_collected
+            .saturating_sub(pool.pre_fetch_collected);
+        assert_eq!(post_fetch_revenue, 0);
+        let entitlement = (post_fetch_revenue as u128 * 6000 / 10000) as u64;
+        assert_eq!(entitlement, 0);
+    }
 }

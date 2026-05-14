@@ -41,7 +41,7 @@
  */
 
 import { gcm } from "@noble/ciphers/aes.js";
-import { x25519, edwardsToMontgomeryPub } from "@noble/curves/ed25519.js";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { randomBytes } from "node:crypto";
@@ -142,18 +142,3 @@ export function unwrapPoolKey(
   return gcm(wrapKey, zeroIv).decrypt(blob);
 }
 
-/**
- * Convert a Solana ed25519 wallet pubkey to an x25519 (Curve25519) pubkey.
- * Standard Edwards→Montgomery point map (RFC 7748). Lets us treat any
- * Solana wallet as an ECIES recipient WITHOUT requiring the wallet's
- * private key (which is used only for signing, never for ECDH on Solana).
- *
- * Note: this maps the ed25519 PUBLIC key. The matching x25519 SECRET key
- * cannot be derived from the wallet's ed25519 SECRET key without exposing
- * it — wallets refuse. So buyers derive a SEPARATE x25519 keypair from a
- * deterministic wallet signature (see app/lib/crypto.ts).
- */
-export function ed25519PubToX25519Pub(edPub: Uint8Array): Uint8Array {
-  if (edPub.length !== 32) throw new Error("ed25519 pubkey must be 32 bytes");
-  return edwardsToMontgomeryPub(edPub);
-}

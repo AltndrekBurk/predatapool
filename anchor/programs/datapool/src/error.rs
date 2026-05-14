@@ -40,4 +40,8 @@ pub enum DataPoolError {
     ReceiptBadDomain,
     #[msg("Storage URI exceeds the on-chain length cap")]
     StorageUriTooLong,
+    #[msg("Pool freshness window has elapsed")]
+    PoolExpired,
+    #[msg("Dataset already registered for this pool")]
+    AlreadyRegistered,
 }
