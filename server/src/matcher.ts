@@ -1,15 +1,15 @@
 /**
  * Request Coalescing & Pool Formation — server side.
  *
- * Data-layer half of PreDataPool's Cloudflare-style "fetch once, share N
- * ways" model. Canonical-key hashing + canonical-request shape live in
- * `@predatapool/sdk` so client (singleflight) and server (pool dedup) use
- * the same 32-byte key.
+ * Data-layer half of PreDataPool's "fetch once, share N ways" model.
+ * Canonical-key hashing + canonical-request shape live in `@predatapool/sdk`
+ * so client (Singleflight) and server (pool dedup) use the same 32-byte key.
  *
  * State here: the persistent `PoolStore` (SQLite). Within a freshness
- * window a fetched pool is REUSED — that's the coalescing semantic; the
- * SDK's `Singleflight` adds in-flight fan-in for concurrent callers in
- * the same process.
+ * window a fetched pool is REUSED. The complementary in-flight fan-in
+ * for concurrent /request callers is the SDK `Singleflight` instance
+ * created in `server/src/index.ts:121` (`fetchSf`) — together they form
+ * the production coalescing surface.
  */
 
 import {

@@ -44,10 +44,17 @@ collapses them into one upstream fetch + one provider payment, serves an
 encrypted-and-verifiable reuse to every other caller, and settles paid reuse
 on Solana in a single batch.
 
-Note on the word "coalescing": the MVP coalesces at the **data layer** (same
-canonical request + fresh AoI = same pool + same payload + same upstream
-payment). The caller-side UX is currently poll-based — turning that into a
-shared in-flight promise is the SDK fan-in work tracked in §5.3.
+Note on the word "coalescing": three production layers active today.
+(1) Data layer: same canonical request + fresh AoI = same pool + same payload
++ same upstream payment (`server/src/matcher.ts`).
+(2) Server-side singleflight: concurrent `/request` callers that cross the
+fetch threshold for the same pool share ONE in-flight `runFetchPipeline`
+via the SDK's `Singleflight` (`server/src/index.ts:121`).
+(3) Settlement batching: N receipts → N compressed-BuyerSlot leaves via
+the scheduler (`server/src/scheduler.ts:30`).
+The buyer-side `app/components/pool-card.tsx` still polls
+`/pool/:hash/metadata` for the fetched flip; an `await`-the-fetch HTTP
+variant is not implemented.
 
 MVP scope:
 

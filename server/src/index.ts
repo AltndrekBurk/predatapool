@@ -39,6 +39,7 @@ import {
 } from "./crypto.js";
 import { buildDataEnvelopeV0 } from "./envelope.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { Singleflight } from "@predatapool/sdk";
 import {
   PRUNE_INTERVAL_MS,
   SETTLE_INTERVAL_MS,
@@ -104,11 +105,20 @@ function validateEnv(): void {
 validateEnv();
 
 /**
- * One in-flight fetch task per canonical pool hash. Guards against two
- * concurrent /request callers both crossing `shouldTriggerFetch=true` and
- * racing to initialize + fetch the same pool. Cleared in `finally`.
+ * Cloudflare-style request coalescing at the HTTP boundary.
+ *
+ * Keyed by canonical pool hash (same key the off-chain matcher uses, same
+ * key the SDK's client-side `hashRequestV2` would compute). N concurrent
+ * /request callers that cross `shouldTriggerFetch=true` for the same pool
+ * share ONE in-flight `runFetchPipeline` Promise; the SDK's `Singleflight`
+ * clears the entry on settle (success OR failure) so subsequent retries
+ * are independent — failures are never cached past the call.
+ *
+ * Each caller still completes its own `joinPool` (per-buyer membership)
+ * before reaching this point; coalescing only collapses the EXPENSIVE
+ * upstream fetch + chain RPC chain, not buyer bookkeeping.
  */
-const inFlightFetches = new Map<string, Promise<void>>();
+const fetchSf = new Singleflight<void>();
 
 /**
  * Lazy-loaded keeper signer for MPP payments. Loaded on first use so the
@@ -276,17 +286,18 @@ app.post("/request", async (req, res) => {
     });
 
     // Lazy on-chain initialize + fetch flow runs only when threshold is met.
-    // Two concurrent /request callers can both observe shouldTriggerFetch=true
-    // for the same pool — `inFlightFetches` dedups them.
-    if (shouldTriggerFetch && !inFlightFetches.has(pool.requestHashHex)) {
+    // Singleflight collapses concurrent identical triggers into one task;
+    // `do()` clears the entry on settle so retries after failure restart fresh.
+    if (shouldTriggerFetch) {
       const agreement = earlyAgreement;
-      const task = runFetchPipeline({
-        poolHashHex: pool.requestHashHex,
-        endpoint: body.endpoint,
-        params: body.params ?? {},
-        agreement,
-      }).finally(() => inFlightFetches.delete(pool.requestHashHex));
-      inFlightFetches.set(pool.requestHashHex, task);
+      void fetchSf.do(pool.requestHashHex, () =>
+        runFetchPipeline({
+          poolHashHex: pool.requestHashHex,
+          endpoint: body.endpoint,
+          params: body.params ?? {},
+          agreement,
+        })
+      );
     }
 
     const preset = DECAY_PRESETS[body.dataType ?? "api_response"];
