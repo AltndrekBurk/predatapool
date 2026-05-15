@@ -5,7 +5,9 @@
  * safe to share across coalescing keys. Throws on non-2xx.
  */
 
+import { Singleflight } from "./coalesce.js";
 import { PoolMetadataVersionError } from "./errors.js";
+import { hashRequestV2Hex, type RequestKeyInput } from "./request-key.js";
 import type {
   BatchInfo,
   DataType,
@@ -41,9 +43,31 @@ export interface ReceiptWire {
   signature: string;
 }
 
+/**
+ * Build the in-tab singleflight key for a `submitRequest` call. Keyed by
+ * canonical request + buyerPubkey: two DIFFERENT buyers for the same pool
+ * still POST independently (each must register membership), while same-
+ * buyer re-entrant calls (double-click, React StrictMode) coalesce.
+ *
+ * The server registry assigns `providerId`, which the client doesn't have,
+ * so the SDK-side key uses a synthetic provider sentinel — coarser than
+ * the server's canonical hash but sufficient to dedup within the tab.
+ */
+function clientSubmitKey(input: SubmitRequestInput): string {
+  const keyInput: RequestKeyInput = {
+    providerId: "client-only",
+    method: (input.method ?? "GET").toUpperCase(),
+    endpoint: input.endpoint,
+    params: input.params ?? {},
+    freshnessWindowSecs: input.freshnessWindowSecs ?? 60,
+  };
+  return `${hashRequestV2Hex(keyInput)}:${input.buyerPubkey}`;
+}
+
 export class PoolClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly inflightSubmit = new Singleflight<RequestResponse>();
 
   constructor(options: PoolClientOptions) {
     if (!options.baseUrl) throw new Error("PoolClient: baseUrl is required");
@@ -52,20 +76,22 @@ export class PoolClient {
   }
 
   async submitRequest(input: SubmitRequestInput): Promise<RequestResponse> {
-    const res = await this.fetchImpl(`${this.baseUrl}/request`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        endpoint: input.endpoint,
-        params: input.params ?? {},
-        buyerPubkey: input.buyerPubkey,
-        dataType: input.dataType,
-        method: input.method,
-        freshnessWindowSecs: input.freshnessWindowSecs,
-      }),
+    return this.inflightSubmit.do(clientSubmitKey(input), async () => {
+      const res = await this.fetchImpl(`${this.baseUrl}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: input.endpoint,
+          params: input.params ?? {},
+          buyerPubkey: input.buyerPubkey,
+          dataType: input.dataType,
+          method: input.method,
+          freshnessWindowSecs: input.freshnessWindowSecs,
+        }),
+      });
+      if (!res.ok) throw new Error(`POST /request failed: ${res.status}`);
+      return (await res.json()) as RequestResponse;
     });
-    if (!res.ok) throw new Error(`POST /request failed: ${res.status}`);
-    return (await res.json()) as RequestResponse;
   }
 
   async getPools(): Promise<PoolsResponse> {

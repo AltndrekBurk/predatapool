@@ -27,6 +27,9 @@ import {
   SystemAccountMetaConfig,
   getDefaultAddressTreeInfo,
   selectStateTreeInfo,
+  createCompressedAccountMeta,
+  type CompressedAccountMeta,
+  type PackedStateTreeInfo,
   deriveAddressSeed,
   deriveAddress,
   bn,
@@ -170,6 +173,97 @@ export async function prepareSettleReceiptCpi(params: {
       rootIndex: proofCtx.rootIndices[0],
     },
     outputTreeIndex: stateTreeIdx,
+    remainingAccounts,
+  };
+}
+
+/**
+ * CPI inputs for `claim_rebate`. Mutate-existing-leaf path: fetches the
+ * sponsor's compressed BuyerSlot from Photon RPC, builds an INCLUSION
+ * validity proof + `CompressedAccountMeta` for the existing leaf, packs
+ * the system + tree accounts the program will read via `remaining_accounts`.
+ *
+ * Caller still has to decode `rawData` into the program-defined
+ * `CompressedBuyerSlot` shape (Anchor `program.coder.types.decode("CompressedBuyerSlot", data)`)
+ * before passing it to `program.methods.claimRebate(...)` — that decode is
+ * kept on the keeper side so this module stays free of the Anchor `Program`
+ * coupling.
+ */
+export interface ClaimRebateCpiInputs {
+  validityProof: WireValidityProof;
+  slotMeta: CompressedAccountMeta;
+  rawData: Buffer;
+  remainingAccounts: AccountMeta[];
+}
+
+export async function prepareClaimRebateCpi(params: {
+  poolPda: PublicKey;
+  buyer: PublicKey;
+}): Promise<ClaimRebateCpiInputs> {
+  const rpc = getLightRpc();
+
+  const addressTreeInfo = getDefaultAddressTreeInfo();
+  const slotAddress = deriveBuyerSlotAddress(
+    params.poolPda,
+    params.buyer,
+    addressTreeInfo.tree
+  );
+
+  const account = await rpc.getCompressedAccount(bn(slotAddress.toBytes()));
+  if (!account) {
+    throw new Error(
+      `BuyerSlot leaf not found for pool ${params.poolPda
+        .toBase58()
+        .slice(0, 8)}... buyer ${params.buyer.toBase58().slice(0, 8)}... ` +
+        "— sponsor must have settled before they can claim."
+    );
+  }
+  if (!account.data) {
+    throw new Error("CompressedAccount has no data — cannot decode BuyerSlot");
+  }
+
+  // Inclusion proof on the existing leaf hash.
+  const hashWithTree: HashWithTree = {
+    hash: account.hash,
+    tree: account.treeInfo.tree,
+    queue: account.treeInfo.queue,
+  };
+  const proofCtx = await rpc.getValidityProofV0([hashWithTree], []);
+
+  // Pack accounts: system metas first, then tree refs the program reads.
+  const packed = PackedAccounts.newWithSystemAccounts(
+    SystemAccountMetaConfig.new(PROGRAM_ID)
+  );
+  const stateTreeInfo = account.treeInfo;
+  const merkleTreeIdx = packed.insertOrGet(stateTreeInfo.tree);
+  const queueIdx = packed.insertOrGet(stateTreeInfo.queue);
+
+  // Output tree where the mutated leaf is written. Same active state tree
+  // is fine for a same-tree update; load-balance only matters for inserts.
+  const outputStateTreeInfos = await rpc.getStateTreeInfos();
+  const outputTreeInfo = selectStateTreeInfo(outputStateTreeInfos);
+  const outputTreeIdx = packed.insertOrGet(outputTreeInfo.tree);
+
+  const { remainingAccounts } = packed.toAccountMetas();
+
+  const packedTreeInfo: PackedStateTreeInfo = {
+    rootIndex: proofCtx.rootIndices[0],
+    proveByIndex: false,
+    merkleTreePubkeyIndex: merkleTreeIdx,
+    queuePubkeyIndex: queueIdx,
+    leafIndex: account.leafIndex,
+  };
+
+  const slotMeta = createCompressedAccountMeta(
+    packedTreeInfo,
+    outputTreeIdx,
+    Array.from(slotAddress.toBytes())
+  );
+
+  return {
+    validityProof: { 0: proofCtx.compressedProof },
+    slotMeta,
+    rawData: account.data.data,
     remainingAccounts,
   };
 }

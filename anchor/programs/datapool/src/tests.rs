@@ -1,11 +1,18 @@
 #[cfg(test)]
 mod tests {
-    use crate::state::DataPool;
+    use crate::state::{exp_neg_q16, DataPool, LN2_Q, Q, X_MAX_Q};
 
     // ── Time-decay pricing unit tests ──────────────────────────────────────
     // These test the pure math in DataPool::current_price without any on-chain setup.
 
-    fn make_pool(base: u64, decay_bps: u16, fetched_at: i64) -> DataPool {
+    /// λ_per_hour in Q16.16. 0.01/hr → 656; 0.05/hr → 3277; 0.0667/hr → 4370.
+    /// `lambda_real_per_hour * 65536` (rounded).
+    const LAMBDA_001: u32 = 656; // ≈ 0.01/hr (was 100 bps/hr linear)
+    const LAMBDA_005: u32 = 3277; // ≈ 0.05/hr (was 500 bps/hr)
+    const LAMBDA_0667: u32 = 4370; // ≈ 0.0667/hr (was 667 bps/hr)
+    const LAMBDA_002: u32 = 1311; // ≈ 0.02/hr (was 200 bps/hr)
+
+    fn make_pool(base: u64, lambda_q16: u32, fetched_at: i64) -> DataPool {
         DataPool {
             request_hash: [0u8; 32],
             keeper: Default::default(),
@@ -18,11 +25,11 @@ mod tests {
             total_distributed: 0,
             fetched_at,
             data_hash: [0u8; 32],
-            decay_bps_per_hour: decay_bps,
+            lambda_q16_per_hour: lambda_q16,
             is_open: true,
             provider: Default::default(),
             provider_share_bps: 0,
-            provider_decay_bps_per_hour: 0,
+            provider_lambda_q16_per_hour: 0,
             provider_paid: 0,
             pre_fetch_collected: 0,
             storage_uri: String::new(),
@@ -37,12 +44,12 @@ mod tests {
 
     fn make_pool_with_provider(
         base: u64,
-        decay_bps: u16,
+        lambda_q16: u32,
         fetched_at: i64,
         total_collected: u64,
         buyer_count: u8,
         provider_share_bps: u16,
-        provider_decay_bps_per_hour: u16,
+        provider_lambda_q16: u32,
     ) -> DataPool {
         DataPool {
             request_hash: [0u8; 32],
@@ -56,11 +63,11 @@ mod tests {
             total_distributed: 0,
             fetched_at,
             data_hash: [0u8; 32],
-            decay_bps_per_hour: decay_bps,
+            lambda_q16_per_hour: lambda_q16,
             is_open: true,
             provider: Default::default(),
             provider_share_bps,
-            provider_decay_bps_per_hour,
+            provider_lambda_q16_per_hour: provider_lambda_q16,
             provider_paid: 0,
             pre_fetch_collected: 0,
             storage_uri: String::new(),
@@ -73,10 +80,60 @@ mod tests {
         }
     }
 
+    /// Asserts |actual - expected| <= tolerance. Names both for clarity.
+    fn assert_close(actual: u64, expected: u64, tolerance: u64, what: &str) {
+        let diff = if actual > expected {
+            actual - expected
+        } else {
+            expected - actual
+        };
+        assert!(
+            diff <= tolerance,
+            "{what}: expected {expected} ± {tolerance}, got {actual} (diff {diff})"
+        );
+    }
+
+    // ── exp_neg_q16 precision tests ────────────────────────────────────────
+
+    #[test]
+    fn test_exp_neg_q16_at_zero_is_one() {
+        assert_eq!(exp_neg_q16(0), Q);
+    }
+
+    #[test]
+    fn test_exp_neg_q16_at_ln2_is_half() {
+        // exp(-ln2) = 0.5 = Q/2 = 32768. Tolerance ±2 for poly + rounding.
+        assert_close(exp_neg_q16(LN2_Q), Q / 2, 2, "exp(-ln2) = 1/2");
+    }
+
+    #[test]
+    fn test_exp_neg_q16_at_one_is_1_over_e() {
+        // exp(-1) ≈ 0.36788. In Q16.16 that's 24109. Tolerance ±4.
+        assert_close(exp_neg_q16(Q), 24_109, 4, "exp(-1) ≈ 1/e");
+    }
+
+    #[test]
+    fn test_exp_neg_q16_at_five() {
+        // exp(-5) ≈ 0.006738 → Q16.16 ≈ 442. Tolerance ±3.
+        assert_close(exp_neg_q16(5 * Q), 442, 3, "exp(-5)");
+    }
+
+    #[test]
+    fn test_exp_neg_q16_at_ten() {
+        // exp(-10) ≈ 4.54e-5 → Q16.16 ≈ 3. Tolerance ±2.
+        assert_close(exp_neg_q16(10 * Q), 3, 2, "exp(-10)");
+    }
+
+    #[test]
+    fn test_exp_neg_q16_saturates_at_x_max() {
+        assert_eq!(exp_neg_q16(X_MAX_Q), 0);
+        assert_eq!(exp_neg_q16(X_MAX_Q + 12345), 0);
+        assert_eq!(exp_neg_q16(u64::MAX), 0);
+    }
+
     #[test]
     fn test_price_pre_fetch_is_base_price() {
-        let pool = make_pool(1_000_000, 100, 0); // $1 USDC, fetched_at = 0
-        // Pre-fetch: price == base price
+        let pool = make_pool(1_000_000, LAMBDA_001, 0); // fetched_at = 0
         assert_eq!(pool.current_price(1_000_000), 1_000_000);
     }
 
@@ -85,48 +142,75 @@ mod tests {
 
     #[test]
     fn test_price_immediately_after_fetch_is_base() {
-        let pool = make_pool(1_000_000, 100, T0);
-        // At exactly fetched_at: 0 hours elapsed → no decay
+        let pool = make_pool(1_000_000, LAMBDA_001, T0);
+        // dt = 0 → exp(0) = 1 → base
         assert_eq!(pool.current_price(T0), 1_000_000);
     }
 
     #[test]
-    fn test_price_decays_at_1_percent_per_hour() {
-        // base = 1_000_000, decay = 100 bps/hr (1%/hr)
-        // After 1 hour: 1_000_000 * (10000 - 100) / 10000 = 990_000
-        let pool = make_pool(1_000_000, 100, T0);
-        assert_eq!(pool.current_price(T0 + 3600), 990_000);
+    fn test_price_decays_after_1_hour() {
+        // λ_q16 = 656 ≈ 0.01001/hr (Q16.16 round-off). After 1hr:
+        // exp(-0.01001) ≈ 0.99005 → ~990_040 micro. Tolerance covers both
+        // the λ representation rounding and the polynomial error.
+        let pool = make_pool(1_000_000, LAMBDA_001, T0);
+        assert_close(
+            pool.current_price(T0 + 3600),
+            990_040,
+            300,
+            "exp decay 1hr at λ≈0.01/hr",
+        );
     }
 
     #[test]
     fn test_price_decays_after_10_hours() {
-        // After 10 hours at 100 bps/hr: 10% decay
-        // 1_000_000 * (10000 - 1000) / 10000 = 900_000
-        let pool = make_pool(1_000_000, 100, T0);
-        assert_eq!(pool.current_price(T0 + 36_000), 900_000);
+        // exp(-0.1001) ≈ 0.90479 → ~904_790 micro.
+        let pool = make_pool(1_000_000, LAMBDA_001, T0);
+        assert_close(
+            pool.current_price(T0 + 36_000),
+            904_790,
+            500,
+            "exp decay 10hr at λ≈0.01/hr",
+        );
     }
 
     #[test]
-    fn test_price_floor_at_1_microusdc() {
-        // After 100+ hours at 100 bps/hr: fully decayed → floor = 1 micro-USDC
-        let pool = make_pool(1_000_000, 100, T0);
-        let far_future = T0 + 1_000_000; // ~278 hours later
-        assert_eq!(pool.current_price(far_future), 1);
+    fn test_price_decays_after_50_hours() {
+        // exp(-0.5005) ≈ 0.60622 → ~606_220 micro. Linear would have hit 50%.
+        let pool = make_pool(1_000_000, LAMBDA_001, T0);
+        assert_close(
+            pool.current_price(T0 + 50 * 3600),
+            606_220,
+            500,
+            "exp decay 50hr at λ≈0.01/hr",
+        );
     }
 
     #[test]
-    fn test_price_50_percent_decay_at_50_hours() {
-        // 100 bps/hr × 50 hours = 5000 bps = 50% decay
-        let pool = make_pool(1_000_000, 100, T0);
-        assert_eq!(pool.current_price(T0 + 50 * 3600), 500_000);
+    fn test_price_floor_at_1_microusdc_far_future() {
+        // After many hours, x > 21 → exp_neg saturates to 0 → floored to 1.
+        let pool = make_pool(1_000_000, LAMBDA_001, T0);
+        // λ=0.01/hr × 2200hr = x=22 → saturates.
+        assert_eq!(pool.current_price(T0 + 2200 * 3600), 1);
     }
 
     #[test]
     fn test_fast_decay_gps_data() {
-        // GPS RTK: 667 bps/hr — fully decayed after ~15 hours
-        let pool = make_pool(500_000, 667, T0);
-        // 667 * 15 = 10005 bps > 10000 → clamped → floor = 1
-        assert_eq!(pool.current_price(T0 + 15 * 3600), 1);
+        // λ=0.0667/hr (GPS RTK), 15hr → x≈1.0 → exp(-1) ≈ 0.3679.
+        // Old linear test asserted floor=1 here; exp keeps real value.
+        let pool = make_pool(500_000, LAMBDA_0667, T0);
+        assert_close(
+            pool.current_price(T0 + 15 * 3600),
+            183_940,
+            200,
+            "GPS decay at 15hr",
+        );
+    }
+
+    #[test]
+    fn test_fast_decay_gps_data_floors_eventually() {
+        // λ=0.0667/hr × 350hr = x≈23 → saturates → floor = 1.
+        let pool = make_pool(500_000, LAMBDA_0667, T0);
+        assert_eq!(pool.current_price(T0 + 350 * 3600), 1);
     }
 
     #[test]
@@ -162,8 +246,8 @@ mod tests {
 
     #[test]
     fn test_decay_with_zero_base_price_floors_at_1() {
-        let pool = make_pool(0, 100, T0);
-        // Even with 0 base price, floor is 1
+        let pool = make_pool(0, LAMBDA_001, T0);
+        // Base price 0 × exp(anything) = 0; price.max(1) → 1.
         assert_eq!(pool.current_price(T0 + 3600), 1);
     }
 
@@ -172,25 +256,29 @@ mod tests {
     #[test]
     fn test_provider_share_pre_fetch_is_base() {
         // Before fetch, share == base (no decay applied yet)
-        let pool = make_pool_with_provider(1_000_000, 100, 0, 0, 0, 6000, 200);
+        let pool = make_pool_with_provider(1_000_000, LAMBDA_001, 0, 0, 0, 6000, LAMBDA_002);
         assert_eq!(pool.provider_share_bps_now(1_700_000_000), 6000);
     }
 
     #[test]
     fn test_provider_share_decays_per_agreement() {
-        // base 6000 bps (60%), provider decay 200 bps/hr
-        // After 10 hours: decay = 2000 → share = 6000 * 8000/10000 = 4800 bps
-        let pool = make_pool_with_provider(1_000_000, 100, T0, 0, 0, 6000, 200);
-        assert_eq!(pool.provider_share_bps_now(T0 + 10 * 3600), 4800);
+        // base 6000 bps (60%), provider λ=0.02/hr.
+        // After 10 hours: exp(-0.2) ≈ 0.8187 → 6000 * 0.8187 ≈ 4912 bps.
+        let pool = make_pool_with_provider(1_000_000, LAMBDA_001, T0, 0, 0, 6000, LAMBDA_002);
+        assert_close(
+            pool.provider_share_bps_now(T0 + 10 * 3600),
+            4912,
+            5,
+            "provider share decay 10hr at λ=0.02/hr",
+        );
     }
 
     #[test]
     fn test_provider_share_floors_at_zero_not_one() {
-        // After very long time, provider share decays to 0 (data rights expire)
-        // Unlike buyer price which floors at 1 micro-USDC
-        let pool = make_pool_with_provider(1_000_000, 100, T0, 0, 0, 6000, 200);
-        // 200 bps/hr × 50 hours = 10000 → fully decayed
-        assert_eq!(pool.provider_share_bps_now(T0 + 50 * 3600), 0);
+        // After far-future time, provider share decays to 0 (data rights expire).
+        // λ=0.02/hr × 1200hr = x=24 → saturates → 0.
+        let pool = make_pool_with_provider(1_000_000, LAMBDA_001, T0, 0, 0, 6000, LAMBDA_002);
+        assert_eq!(pool.provider_share_bps_now(T0 + 1200 * 3600), 0);
     }
 
     #[test]

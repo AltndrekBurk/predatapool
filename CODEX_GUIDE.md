@@ -8,7 +8,7 @@ Bu dosya projenin kisa karar rehberidir. Ayrintili veya emin olunmayan her tekni
 
 PreDataPool, **DePIN, IoT ve edge compute icin Solana-native bir request coalescing katmanidir** — Cloudflare'in "tek fetch, N caller paylasimi" deseninin M2M ekonomisine uyarlanmis hali. Ayni canonical public request'i hedefleyen birden fazla ajan/makine icin tek upstream fetch + tek provider odemesi yapar, sifrelenmis ve dogrulanabilir reuse sunar, Solana'da tek batch'te settle eder.
 
-"Coalescing" notu: MVP **veri katmaninda** coalesce eder (ayni canonical request + taze AoI window = ayni pool + ayni payload + ayni upstream odemesi). Caller tarafi UX su an polling tabanli; bunu paylasimli in-flight promise'a cevirmek SDK fan-in isidir (bkz. AGENTS.md §5.3).
+"Coalescing" notu: bugun **uc katmanda** uretimde aktif. (1) Veri katmani: ayni canonical request + taze AoI = ayni pool + ayni payload + ayni upstream odemesi (`server/src/matcher.ts`). (2) Server-side singleflight: ayni pool icin esanli `/request` cagrilari SDK'nin `Singleflight` sinifi araciligiyla tek bir `runFetchPipeline` Promise'ini paylasir (`server/src/index.ts:121`). (3) Settlement batching: N receipt → N compressed BuyerSlot (`scheduler.ts`). App tarafi hala `/pool/:hash/metadata`'yi polluyor; `?wait=true` modlu blocking `/request` yok.
 
 Ilk MVP yalnizca public ve paylasilabilir veriye odaklanir:
 
@@ -89,18 +89,20 @@ Query sirasi, trailing slash, param sirasina bagli farklar ayni istegi farkli po
 ## 5. AoI / Freshness Modeli
 
 Age of Information bu projenin fiyat ve cache mantiginin bilimsel temelidir.
+Hem off-chain hem on-chain ustel decay uygulanir:
 
 ```
 AoI(t) = t - fetched_at
 valid_until = fetched_at + freshness_window
-price(t) = base_price * decay(AoI)
+price(t) = base_price * exp(-lambda * AoI_hours)
 ```
 
-MVP icin mevcut lineer decay kabul edilebilir. Hedef model ustel decay'dir:
-
-```
-freshness_score(t) = exp(-lambda * (t - fetched_at))
-```
+- Off-chain: `server/src/decay.ts:currentPrice` — `Math.exp(-λ·Δhr)`.
+- On-chain: `anchor/programs/datapool/src/state.rs:current_price` —
+  Q16.16 fixed-point `exp_neg_q16` (range-reduced minimax polinomu).
+- Saklama: `lambda_q16_per_hour: u32` (Q16.16). Keeper `lambdaToQ16` ile
+  donusturur. Cap: λ ≤ 1000/hr (Q16.16 = 65_536_000).
+- Parity test'leri: `server/src/decay.test.ts` + Anchor `tests.rs`.
 
 Yeni kategori uydurulmaz; once asagidaki tablo guncellenir.
 

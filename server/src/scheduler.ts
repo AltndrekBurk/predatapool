@@ -104,18 +104,8 @@ export function recoverStuckFetching(now: number = Date.now()): {
   return { reset, closed };
 }
 
-let settleHandle: NodeJS.Timeout | undefined;
-let pruneHandle: NodeJS.Timeout | undefined;
-
 export function startScheduler(): void {
   recoverStuckFetching();
-  settleHandle = setInterval(() => void tickSettle(), SETTLE_INTERVAL_MS);
-  pruneHandle = setInterval(tickPrune, PRUNE_INTERVAL_MS);
-}
-
-export function stopScheduler(): void {
-  if (settleHandle) clearInterval(settleHandle);
-  if (pruneHandle) clearInterval(pruneHandle);
-  settleHandle = undefined;
-  pruneHandle = undefined;
+  setInterval(() => void tickSettle(), SETTLE_INTERVAL_MS);
+  setInterval(tickPrune, PRUNE_INTERVAL_MS);
 }

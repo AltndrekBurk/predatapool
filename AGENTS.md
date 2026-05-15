@@ -44,10 +44,17 @@ collapses them into one upstream fetch + one provider payment, serves an
 encrypted-and-verifiable reuse to every other caller, and settles paid reuse
 on Solana in a single batch.
 
-Note on the word "coalescing": the MVP coalesces at the **data layer** (same
-canonical request + fresh AoI = same pool + same payload + same upstream
-payment). The caller-side UX is currently poll-based — turning that into a
-shared in-flight promise is the SDK fan-in work tracked in §5.3.
+Note on the word "coalescing": three production layers active today.
+(1) Data layer: same canonical request + fresh AoI = same pool + same payload
++ same upstream payment (`server/src/matcher.ts`).
+(2) Server-side singleflight: concurrent `/request` callers that cross the
+fetch threshold for the same pool share ONE in-flight `runFetchPipeline`
+via the SDK's `Singleflight` (`server/src/index.ts:121`).
+(3) Settlement batching: N receipts → N compressed-BuyerSlot leaves via
+the scheduler (`server/src/scheduler.ts:30`).
+The buyer-side `app/components/pool-card.tsx` still polls
+`/pool/:hash/metadata` for the fetched flip; an `await`-the-fetch HTTP
+variant is not implemented.
 
 MVP scope:
 
@@ -92,15 +99,24 @@ provider opt-in exists and is verified.
 
 ### Time Decay / AoI
 
-Freshness is based on Age of Information:
+Freshness is based on Age of Information. Implemented in both surfaces:
 
 ```text
 valid(t) = t < fetched_at + tau_decay
-freshness_score(t) = exp(-lambda * (t - fetched_at))
+price(t) = base_price * exp(-lambda * (t - fetched_at))
 ```
 
-The current code may use linear decay. Do not change the model without updating
-this file and `CODEX_GUIDE.md`.
+- Off-chain: `server/src/decay.ts:currentPrice` uses `Math.exp(-λ·Δhr)`.
+- On-chain: `anchor/programs/datapool/src/state.rs:current_price` uses
+  `exp_neg_q16`, a Q16.16 range-reduced minimax polynomial. Saturates to 0
+  at x ≥ 21 (price floors at 1 micro-USDC).
+- λ is stored on-chain as `lambda_q16_per_hour: u32` (Q16.16, per-hour).
+  Keeper converts a real λ to Q16.16 via `decay.lambdaToQ16` at
+  `initialize_pool` time.
+- Parity: off-chain `Math.exp` and on-chain `exp_neg_q16` agree within
+  0.5% across the meaningful range (`server/src/decay.test.ts`).
+
+Do not change the model without updating this file and `CODEX_GUIDE.md`.
 
 ### Revenue Split
 

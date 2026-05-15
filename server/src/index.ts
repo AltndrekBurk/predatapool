@@ -39,6 +39,7 @@ import {
 } from "./crypto.js";
 import { buildDataEnvelopeV0 } from "./envelope.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { Singleflight } from "@predatapool/sdk";
 import {
   PRUNE_INTERVAL_MS,
   SETTLE_INTERVAL_MS,
@@ -88,27 +89,35 @@ function assertPublicPoolEligible(input: {
 function validateEnv(): void {
   if (process.env.NODE_ENV === "test") return;
   if (!process.env.SERVER_BASE_URL) {
-    console.warn(
-      "[server] SERVER_BASE_URL not set — on-chain storage_uri will point at " +
-        "localhost. Set it before running outside dev."
+    throw new Error(
+      "[server] SERVER_BASE_URL not set — on-chain storage_uri would point at " +
+        "localhost. Set it before booting outside dev."
     );
   }
   if (!process.env.PHOTON_RPC_URL) {
-    console.warn(
-      "[server] PHOTON_RPC_URL not set — settle_receipt will fail at runtime " +
-        "(Light Protocol requires Photon). Set a Helius/Photon endpoint to " +
-        "settle compressed BuyerSlot leaves."
+    throw new Error(
+      "[server] PHOTON_RPC_URL not set — settle_receipt would fail at runtime " +
+        "(Light Protocol requires Photon). Set a Helius/Photon endpoint."
     );
   }
 }
 validateEnv();
 
 /**
- * One in-flight fetch task per canonical pool hash. Guards against two
- * concurrent /request callers both crossing `shouldTriggerFetch=true` and
- * racing to initialize + fetch the same pool. Cleared in `finally`.
+ * Cloudflare-style request coalescing at the HTTP boundary.
+ *
+ * Keyed by canonical pool hash (same key the off-chain matcher uses, same
+ * key the SDK's client-side `hashRequestV2` would compute). N concurrent
+ * /request callers that cross `shouldTriggerFetch=true` for the same pool
+ * share ONE in-flight `runFetchPipeline` Promise; the SDK's `Singleflight`
+ * clears the entry on settle (success OR failure) so subsequent retries
+ * are independent — failures are never cached past the call.
+ *
+ * Each caller still completes its own `joinPool` (per-buyer membership)
+ * before reaching this point; coalescing only collapses the EXPENSIVE
+ * upstream fetch + chain RPC chain, not buyer bookkeeping.
  */
-const inFlightFetches = new Map<string, Promise<void>>();
+const fetchSf = new Singleflight<void>();
 
 /**
  * Lazy-loaded keeper signer for MPP payments. Loaded on first use so the
@@ -157,10 +166,10 @@ async function runFetchPipeline(args: {
         requestHashHex: poolHashHex,
         basePriceUsdc: agreement.basePriceUsdc,
         minBuyers: agreement.minBuyers,
-        decayBpsPerHour: agreement.buyerDecayBpsPerHour,
+        buyerLambdaPerHour: agreement.buyerLambdaPerHour,
         provider: agreement.provider,
         providerShareBps: agreement.providerShareBps,
-        providerDecayBpsPerHour: agreement.providerDecayBpsPerHour,
+        providerLambdaPerHour: agreement.providerLambdaPerHour,
         usdcMint: USDC_MINT,
       });
     } catch (err) {
@@ -276,17 +285,18 @@ app.post("/request", async (req, res) => {
     });
 
     // Lazy on-chain initialize + fetch flow runs only when threshold is met.
-    // Two concurrent /request callers can both observe shouldTriggerFetch=true
-    // for the same pool — `inFlightFetches` dedups them.
-    if (shouldTriggerFetch && !inFlightFetches.has(pool.requestHashHex)) {
+    // Singleflight collapses concurrent identical triggers into one task;
+    // `do()` clears the entry on settle so retries after failure restart fresh.
+    if (shouldTriggerFetch) {
       const agreement = earlyAgreement;
-      const task = runFetchPipeline({
-        poolHashHex: pool.requestHashHex,
-        endpoint: body.endpoint,
-        params: body.params ?? {},
-        agreement,
-      }).finally(() => inFlightFetches.delete(pool.requestHashHex));
-      inFlightFetches.set(pool.requestHashHex, task);
+      void fetchSf.do(pool.requestHashHex, () =>
+        runFetchPipeline({
+          poolHashHex: pool.requestHashHex,
+          endpoint: body.endpoint,
+          params: body.params ?? {},
+          agreement,
+        })
+      );
     }
 
     const preset = DECAY_PRESETS[body.dataType ?? "api_response"];

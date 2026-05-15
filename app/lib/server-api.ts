@@ -96,13 +96,13 @@ export async function fetchAndVerify(
 
 export { sha256Hex };
 
-// Decay presets (bps per hour) — must match server/src/decay.ts
-const DECAY_BPS: Record<DataType, number> = {
-  weather: 100,
-  gps_rtk: 667,
-  map_imagery: 1,
-  iot_sensor: 200,
-  api_response: 500,
+// AoI exponential decay λ per hour — must match server/src/decay.ts DECAY_PRESETS.
+const LAMBDAS: Record<DataType, number> = {
+  weather: 0.01,
+  gps_rtk: 0.0667,
+  map_imagery: 0.0001,
+  iot_sensor: 0.02,
+  api_response: 0.05,
 };
 
 export function calcCurrentPriceUsdc(
@@ -112,10 +112,9 @@ export function calcCurrentPriceUsdc(
   nowMs: number = Date.now()
 ): number {
   if (!fetchedAtMs) return basePriceUsdc;
-  const hoursElapsed = (nowMs - fetchedAtMs) / 3_600_000;
-  const decayBps = DECAY_BPS[dataType];
-  const decay = Math.min(10000, decayBps * hoursElapsed);
-  return Math.max(1, Math.floor((basePriceUsdc * (10000 - decay)) / 10000));
+  const hoursElapsed = Math.max(0, (nowMs - fetchedAtMs) / 3_600_000);
+  const decay = Math.exp(-LAMBDAS[dataType] * hoursElapsed);
+  return Math.max(1, Math.floor(basePriceUsdc * decay));
 }
 
 export function formatUsdc(microUsdc: number): string {

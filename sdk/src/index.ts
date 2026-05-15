@@ -2,8 +2,9 @@
  * @predatapool/sdk — public surface.
  *
  * Solana-native request coalescing for DePIN, IoT, and edge compute.
- * Pair `PoolClient` with `FetchAndVerify` for the full M2M consumer flow;
- * use `Singleflight` directly for non-DataPool coalescing experiments.
+ * `PoolClient` wraps the pool node's HTTP API (with in-tab Singleflight
+ * on submitRequest); `Singleflight` is also exported standalone for
+ * arbitrary coalescing use cases.
  */
 
 export { PoolClient } from "./client.js";
@@ -14,8 +15,6 @@ export type {
 } from "./client.js";
 
 export { Singleflight } from "./coalesce.js";
-export { FetchAndVerify } from "./fetch-and-verify.js";
-export type { FetchAndVerifyInput, VerifiedResult } from "./fetch-and-verify.js";
 
 export {
   hashRequestV2,

@@ -31,16 +31,24 @@ shared work.
 
 ## Coalescing model (honest framing)
 
-The MVP coalesces at the **data layer**, not the literal HTTP layer:
+The MVP coalesces at **two layers**:
 
-- Same canonical request within a freshness window → same pool → same fetch.
-- Concurrent callers join the pool and currently **poll for completion**
-  (SDK fan-in / promise-sharing is a tracked TODO — see `AGENTS.md §5.3`).
-- Settlement is genuinely batched: N off-chain signed receipts → 1 on-chain
-  `settle_receipt` flow with compressed BuyerSlot leaves (Light Protocol).
+- **Data layer (production):** Same canonical request within a freshness
+  window → same pool → same encrypted payload (`server/src/matcher.ts`
+  + SQLite-backed dedup).
+- **Server-side singleflight (production):** N concurrent `/request`
+  callers crossing the fetch threshold for the same pool share ONE
+  in-flight `runFetchPipeline` Promise via the SDK's `Singleflight`
+  (`server/src/index.ts:121`, `sdk/src/coalesce.ts:21`). One upstream
+  fetch + one chain RPC chain, no duplicate work.
+- **Settlement batching (production):** N off-chain signed receipts →
+  N `settle_receipt` txs from the scheduler, each writing a compressed
+  BuyerSlot leaf via Light Protocol. No per-buyer wallet signature on chain.
 
-So "coalescing" here describes the work-sharing semantics; the caller-side UX
-is still poll-based until the SDK promise layer lands.
+**What is still poll-based:** the buyer's `app/components/pool-card.tsx`
+polls `GET /pool/:hash/metadata` until `status === "fetched"` before
+asking for the wrapped key. A blocking `?wait=true` variant of `/request`
+is not implemented today.
 
 ## What It Solves
 
