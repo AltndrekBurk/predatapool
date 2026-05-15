@@ -1,12 +1,13 @@
 /**
  * Provider Registry — endpoint → on-chain agreement
  *
- * Each entry encodes a provider's negotiated time-decay agreement:
- *   - buyer-side pricing (basePriceUsdc, buyerDecayBpsPerHour)
- *   - provider-side revenue share (providerShareBps, providerDecayBpsPerHour)
+ * Each entry encodes a provider's AoI-exponential decay agreement:
+ *   - buyer-side pricing (basePriceUsdc, buyerLambdaPerHour)
+ *   - provider-side revenue share (providerShareBps, providerLambdaPerHour)
  *
- * The keeper looks up an agreement when a new pool is created and passes
- * the parameters to `initialize_pool` so they're stored on-chain immutably.
+ * The keeper looks up an agreement when a new pool is created, converts λ
+ * to Q16.16 (via `lambdaToQ16` in decay.ts), and passes the values to
+ * `initialize_pool` so they're stored on-chain immutably.
  *
  * MVP: in-memory map keyed by URL hostname. Production should replace this
  * with an on-chain provider registry account so any keeper can resolve it.
@@ -33,12 +34,12 @@ export interface ProviderAgreement {
   provider: PublicKey;
   /** Buyer-side base price in USDC micro-units (6 decimals) */
   basePriceUsdc: number;
-  /** Buyer-side time-decay in bps/hr (100 = 1%/hr) */
-  buyerDecayBpsPerHour: number;
+  /** Buyer-side AoI decay rate λ in per-hour; price = base · exp(-λ·Δhr). */
+  buyerLambdaPerHour: number;
   /** Provider's base share of post-fetch revenue, in bps */
   providerShareBps: number;
-  /** Provider's own time-decay in bps/hr (data rights age) */
-  providerDecayBpsPerHour: number;
+  /** Provider's own AoI decay rate λ in per-hour (data rights age). */
+  providerLambdaPerHour: number;
   /** Min buyers before fetch can be triggered */
   minBuyers: number;
   /**
@@ -59,6 +60,9 @@ const DEFAULT_PROVIDER = new PublicKey(
 /**
  * Static registry — replace with on-chain provider lookup later.
  * Pubkeys read from env so deployments can wire real provider keys.
+ *
+ * λ conversion from old linear `decay_bps_per_hour`:
+ *   λ ≈ decay_bps / 10000 (linear ≈ exp at small t)
  */
 const REGISTRY: Record<string, ProviderAgreement> = {
   "api.weatherxm.com": {
@@ -66,9 +70,9 @@ const REGISTRY: Record<string, ProviderAgreement> = {
       ? new PublicKey(process.env.WEATHERXM_PROVIDER_PUBKEY)
       : DEFAULT_PROVIDER,
     basePriceUsdc: 100_000, // $0.10
-    buyerDecayBpsPerHour: 100, // 1%/hr
+    buyerLambdaPerHour: 0.01, // half-life ≈ 69hr
     providerShareBps: 6000, // 60% of post-fetch revenue
-    providerDecayBpsPerHour: 200, // provider share halves in 25hr
+    providerLambdaPerHour: 0.02, // share half-life ≈ 35hr
     minBuyers: 2,
     freshnessWindowSecs: 60, // weather: 1-minute SLO
     upstream: { kind: "apiKey", envVar: "WEATHERXM_API_KEY" },
@@ -78,9 +82,9 @@ const REGISTRY: Record<string, ProviderAgreement> = {
       ? new PublicKey(process.env.HIVEMAPPER_PROVIDER_PUBKEY)
       : DEFAULT_PROVIDER,
     basePriceUsdc: 50_000, // $0.05
-    buyerDecayBpsPerHour: 1, // map imagery: very slow decay
+    buyerLambdaPerHour: 0.0001, // map imagery: half-life ≈ 290d
     providerShareBps: 5000, // 50%
-    providerDecayBpsPerHour: 5, // provider share decays slowly too
+    providerLambdaPerHour: 0.0005, // provider share half-life ≈ 58d
     minBuyers: 2,
     freshnessWindowSecs: 86_400, // map imagery: 1-day SLO
     upstream: { kind: "apiKey", envVar: "HIVEMAPPER_API_KEY" },
@@ -92,9 +96,9 @@ const REGISTRY: Record<string, ProviderAgreement> = {
       ? new PublicKey(process.env.MOCK_PROVIDER_PUBKEY)
       : DEFAULT_PROVIDER,
     basePriceUsdc: 50_000,
-    buyerDecayBpsPerHour: 200,
+    buyerLambdaPerHour: 0.02,
     providerShareBps: 5000,
-    providerDecayBpsPerHour: 100,
+    providerLambdaPerHour: 0.01,
     minBuyers: 1,
     freshnessWindowSecs: 60,
     upstream: { kind: "mpp", currency: "USDC" },
@@ -108,9 +112,9 @@ const REGISTRY: Record<string, ProviderAgreement> = {
 const FALLBACK_AGREEMENT: ProviderAgreement = {
   provider: DEFAULT_PROVIDER,
   basePriceUsdc: 50_000,
-  buyerDecayBpsPerHour: 500,
+  buyerLambdaPerHour: 0.05, // half-life ≈ 14hr
   providerShareBps: 5000,
-  providerDecayBpsPerHour: 100,
+  providerLambdaPerHour: 0.01,
   minBuyers: 2,
   freshnessWindowSecs: 300, // unknown endpoints: 5-minute default SLO
   upstream: { kind: "free" },

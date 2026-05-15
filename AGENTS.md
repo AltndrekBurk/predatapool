@@ -92,15 +92,24 @@ provider opt-in exists and is verified.
 
 ### Time Decay / AoI
 
-Freshness is based on Age of Information:
+Freshness is based on Age of Information. Implemented in both surfaces:
 
 ```text
 valid(t) = t < fetched_at + tau_decay
-freshness_score(t) = exp(-lambda * (t - fetched_at))
+price(t) = base_price * exp(-lambda * (t - fetched_at))
 ```
 
-The current code may use linear decay. Do not change the model without updating
-this file and `CODEX_GUIDE.md`.
+- Off-chain: `server/src/decay.ts:currentPrice` uses `Math.exp(-λ·Δhr)`.
+- On-chain: `anchor/programs/datapool/src/state.rs:current_price` uses
+  `exp_neg_q16`, a Q16.16 range-reduced minimax polynomial. Saturates to 0
+  at x ≥ 21 (price floors at 1 micro-USDC).
+- λ is stored on-chain as `lambda_q16_per_hour: u32` (Q16.16, per-hour).
+  Keeper converts a real λ to Q16.16 via `decay.lambdaToQ16` at
+  `initialize_pool` time.
+- Parity: off-chain `Math.exp` and on-chain `exp_neg_q16` agree within
+  0.5% across the meaningful range (`server/src/decay.test.ts`).
+
+Do not change the model without updating this file and `CODEX_GUIDE.md`.
 
 ### Revenue Split
 

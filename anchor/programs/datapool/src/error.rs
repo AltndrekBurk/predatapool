@@ -20,8 +20,8 @@ pub enum DataPoolError {
     ThresholdNotReached,
     #[msg("Arithmetic overflow")]
     Overflow,
-    #[msg("Invalid decay rate: must be between 1 and 10000 basis points")]
-    InvalidDecayRate,
+    #[msg("Invalid decay lambda: must be a positive Q16.16 per-hour ≤ 65_536_000 (λ ≤ 1000/hr)")]
+    InvalidDecayLambda,
     #[msg("Caller is not authorized to claim this revenue")]
     UnauthorizedClaim,
     #[msg("Invalid revenue split: provider_share + sponsor_share must be <= 10000 bps")]

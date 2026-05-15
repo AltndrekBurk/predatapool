@@ -89,18 +89,20 @@ Query sirasi, trailing slash, param sirasina bagli farklar ayni istegi farkli po
 ## 5. AoI / Freshness Modeli
 
 Age of Information bu projenin fiyat ve cache mantiginin bilimsel temelidir.
+Hem off-chain hem on-chain ustel decay uygulanir:
 
 ```
 AoI(t) = t - fetched_at
 valid_until = fetched_at + freshness_window
-price(t) = base_price * decay(AoI)
+price(t) = base_price * exp(-lambda * AoI_hours)
 ```
 
-MVP icin mevcut lineer decay kabul edilebilir. Hedef model ustel decay'dir:
-
-```
-freshness_score(t) = exp(-lambda * (t - fetched_at))
-```
+- Off-chain: `server/src/decay.ts:currentPrice` — `Math.exp(-λ·Δhr)`.
+- On-chain: `anchor/programs/datapool/src/state.rs:current_price` —
+  Q16.16 fixed-point `exp_neg_q16` (range-reduced minimax polinomu).
+- Saklama: `lambda_q16_per_hour: u32` (Q16.16). Keeper `lambdaToQ16` ile
+  donusturur. Cap: λ ≤ 1000/hr (Q16.16 = 65_536_000).
+- Parity test'leri: `server/src/decay.test.ts` + Anchor `tests.rs`.
 
 Yeni kategori uydurulmaz; once asagidaki tablo guncellenir.
 

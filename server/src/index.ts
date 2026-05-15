@@ -157,10 +157,10 @@ async function runFetchPipeline(args: {
         requestHashHex: poolHashHex,
         basePriceUsdc: agreement.basePriceUsdc,
         minBuyers: agreement.minBuyers,
-        decayBpsPerHour: agreement.buyerDecayBpsPerHour,
+        buyerLambdaPerHour: agreement.buyerLambdaPerHour,
         provider: agreement.provider,
         providerShareBps: agreement.providerShareBps,
-        providerDecayBpsPerHour: agreement.providerDecayBpsPerHour,
+        providerLambdaPerHour: agreement.providerLambdaPerHour,
         usdcMint: USDC_MINT,
       });
     } catch (err) {

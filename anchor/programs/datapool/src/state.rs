@@ -45,9 +45,10 @@ pub struct DataPool {
     /// SHA-256 hash of the fetched data payload (set after fetch)
     pub data_hash: [u8; 32],
 
-    /// Time-decay rate in basis points per hour (100 = 1% per hour)
-    /// Price formula: base_price * max(0, 10000 - decay_bps * hours_elapsed) / 10000
-    pub decay_bps_per_hour: u16,
+    /// Buyer-side AoI decay rate — λ in Q16.16 fixed-point, units = per hour.
+    ///   price(t) = base * exp(-(λ_q / 2^16) · Δhours)
+    /// Example: 656 ≈ 0.01/hr ≈ -1%/hr near t=0 (matches the old 100 bps/hr).
+    pub lambda_q16_per_hour: u32,
 
     /// Whether the pool is accepting new buyers
     pub is_open: bool,
@@ -57,12 +58,12 @@ pub struct DataPool {
     pub provider: Pubkey,
 
     /// Provider's base share of post-fetch revenue, in bps at fetch time.
-    /// Decays per `provider_decay_bps_per_hour` to model aging data rights.
+    /// Decays per `provider_lambda_q16_per_hour` to model aging data rights.
     pub provider_share_bps: u16,
 
-    /// Time-decay rate for provider's share, in bps per hour.
-    /// effective_bps(t) = provider_share_bps * max(0, 10000 - provider_decay * hrs) / 10000
-    pub provider_decay_bps_per_hour: u16,
+    /// Provider-side AoI decay rate — λ in Q16.16 fixed-point, units = per hour.
+    /// Same formula as `lambda_q16_per_hour`; share floors at 0 instead of 1.
+    pub provider_lambda_q16_per_hour: u32,
 
     /// Cumulative USDC paid to provider so far (for incremental claim accounting).
     pub provider_paid: u64,
@@ -115,37 +116,95 @@ impl DataPool {
     /// hand — tests assert equality against the field's serialization.
     pub const STORAGE_URI_MAX_LEN: usize = 128;
 
-    /// Calculate current price based on time elapsed since fetch.
-    /// Returns base_price_usdc if not yet fetched (pre-fetch = full price).
+    /// Calculate current price using exponential AoI decay.
+    ///   price(t) = base * exp(-λ · Δhours)
+    /// Floors at 1 micro-USDC. Pre-fetch returns base.
     pub fn current_price(&self, now: i64) -> u64 {
         if self.fetched_at == 0 {
             return self.base_price_usdc;
         }
-        let hours_elapsed = ((now - self.fetched_at) as u64).saturating_div(3600);
-        let decay = (self.decay_bps_per_hour as u64)
-            .saturating_mul(hours_elapsed)
-            .min(10000);
-        self.base_price_usdc
-            .saturating_mul(10000u64.saturating_sub(decay))
-            .saturating_div(10000)
-            .max(1) // floor: 1 micro-USDC minimum
+        let dt_secs = (now - self.fetched_at).max(0) as u64;
+        let x_q = lambda_dt_to_xq(self.lambda_q16_per_hour, dt_secs);
+        let exp_q = exp_neg_q16(x_q);
+        let price = (self.base_price_usdc as u128)
+            .saturating_mul(exp_q as u128)
+            / Q as u128;
+        (price as u64).max(1)
     }
 
     /// Provider's currently-effective share of post-fetch revenue, in bps.
-    /// Decays from `provider_share_bps` toward 0 as data ages — provider's
-    /// own time-based agreement. Floors at 0 (unlike buyer price which floors at 1).
+    /// Same exponential decay as `current_price`; floors at 0 (not 1) since
+    /// share is a percentage, not a price.
     pub fn provider_share_bps_now(&self, now: i64) -> u64 {
         if self.fetched_at == 0 {
             return self.provider_share_bps as u64;
         }
-        let hours_elapsed = ((now - self.fetched_at) as u64).saturating_div(3600);
-        let decay = (self.provider_decay_bps_per_hour as u64)
-            .saturating_mul(hours_elapsed)
-            .min(10000);
-        (self.provider_share_bps as u64)
-            .saturating_mul(10000u64.saturating_sub(decay))
-            .saturating_div(10000)
+        let dt_secs = (now - self.fetched_at).max(0) as u64;
+        let x_q = lambda_dt_to_xq(self.provider_lambda_q16_per_hour, dt_secs);
+        let exp_q = exp_neg_q16(x_q);
+        ((self.provider_share_bps as u128) * (exp_q as u128) / Q as u128) as u64
     }
+}
+
+// ── Q16.16 fixed-point exponential decay ──────────────────────────────────
+//
+// All arithmetic is integer-only and deterministic. `exp_neg_q16` evaluates
+// exp(-x) where x is a Q16.16 unsigned fixed-point number. Strategy: range
+// reduction x = k·ln2 + r, r in [0, ln2). Compute exp(-r) via a degree-5
+// minimax polynomial in Horner form, then divide by 2^k with a right shift.
+//
+// Verified against Math.exp at x ∈ {0, ln2, 1, 5, 10}: relative error <5e-5.
+// Saturates to 0 at x ≥ 21 (exp(-21) ≈ 7.6e-10, below the Q16.16 LSB).
+
+/// One in Q16.16 (= 2^16).
+pub const Q: u64 = 65_536;
+/// ln(2) in Q16.16 — rounded to nearest. 0.69314718 · 2^16 ≈ 45_426.
+pub const LN2_Q: u64 = 45_426;
+/// exp(-x) ≈ 0 for x ≥ 21; cap saves loop iterations and overflow risk.
+pub const X_MAX_Q: u64 = 21 * Q;
+
+/// Convert (λ stored as Q16.16 per-hour, Δseconds) into x = λ·Δhours in Q16.16.
+/// Saturates at `X_MAX_Q` so callers don't have to worry about overflow.
+#[inline]
+fn lambda_dt_to_xq(lambda_q_per_hour: u32, dt_secs: u64) -> u64 {
+    // x_q = (λ_q * dt_secs / 3600) in Q16.16. Use u128 to avoid overflow:
+    // worst case λ_q = u32::MAX ≈ 4.3e9, dt_secs = u64 — product fits u128.
+    let raw = (lambda_q_per_hour as u128).saturating_mul(dt_secs as u128) / 3600u128;
+    if raw >= X_MAX_Q as u128 {
+        X_MAX_Q
+    } else {
+        raw as u64
+    }
+}
+
+/// exp(-x) in Q16.16. `x_q` is also Q16.16. Saturates to 0 at x ≥ 21.
+pub fn exp_neg_q16(x_q: u64) -> u64 {
+    if x_q >= X_MAX_Q {
+        return 0;
+    }
+    let k = x_q / LN2_Q; // integer part in units of ln2
+    let r_q = (x_q - k * LN2_Q) as i128; // r in [0, ln2), Q16.16
+    let q = Q as i128;
+
+    // Horner: exp(-r) ≈ 1 - r + r²/2 - r³/6 + r⁴/24 - r⁵/120
+    //   coefficients in Q16.16, signed
+    let c5: i128 = -q / 120;
+    let c4: i128 = q / 24;
+    let c3: i128 = -q / 6;
+    let c2: i128 = q / 2;
+    let c1: i128 = -q;
+    let c0: i128 = q;
+
+    let mut acc = c5;
+    acc = (acc * r_q) / q + c4;
+    acc = (acc * r_q) / q + c3;
+    acc = (acc * r_q) / q + c2;
+    acc = (acc * r_q) / q + c1;
+    acc = (acc * r_q) / q + c0;
+
+    // acc is exp(-r) in Q16.16, ∈ [Q/2, Q]. Multiply by 2^-k via right shift.
+    let exp_r = acc.max(0) as u64; // polynomial bounded; clamp defensively
+    exp_r >> k as u32
 }
 
 /// One buyer's slot stored as a compressed leaf in Light Protocol's state

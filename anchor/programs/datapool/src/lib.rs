@@ -34,16 +34,19 @@ pub mod datapool {
         request_hash: [u8; 32],
         base_price_usdc: u64,
         min_buyers: u8,
-        decay_bps_per_hour: u16,
+        lambda_q16_per_hour: u32,
         provider: Pubkey,
         provider_share_bps: u16,
-        provider_decay_bps_per_hour: u16,
+        provider_lambda_q16_per_hour: u32,
     ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
 
+        // λ is Q16.16 per hour. 0 → no decay (special-case nonsensical for
+        // priced data). Cap at λ=1000/hr (Q16.16 = 65_536_000) — anything
+        // beyond that decays in seconds and the buyer never gets a chance.
         require!(
-            decay_bps_per_hour > 0 && decay_bps_per_hour <= 10000,
-            error::DataPoolError::InvalidDecayRate
+            lambda_q16_per_hour > 0 && lambda_q16_per_hour <= 65_536_000,
+            error::DataPoolError::InvalidDecayLambda
         );
 
         // Provider + sponsor shares of post-fetch revenue must fit in 100%.
@@ -66,11 +69,11 @@ pub mod datapool {
         pool.total_distributed = 0;
         pool.fetched_at = 0;
         pool.data_hash = [0u8; 32];
-        pool.decay_bps_per_hour = decay_bps_per_hour;
+        pool.lambda_q16_per_hour = lambda_q16_per_hour;
         pool.is_open = true;
         pool.provider = provider;
         pool.provider_share_bps = provider_share_bps;
-        pool.provider_decay_bps_per_hour = provider_decay_bps_per_hour;
+        pool.provider_lambda_q16_per_hour = provider_lambda_q16_per_hour;
         pool.provider_paid = 0;
         pool.pre_fetch_collected = 0;
         pool.storage_uri = String::new();
@@ -82,11 +85,11 @@ pub mod datapool {
         pool.bump = ctx.bumps.pool;
 
         msg!(
-            "DataPool initialized. Request hash: {:?}. Provider: {}, share: {} bps, decay: {} bps/hr",
+            "DataPool initialized. Request hash: {:?}. Provider: {}, share: {} bps, λ_q16/hr: {}",
             request_hash,
             provider,
             provider_share_bps,
-            provider_decay_bps_per_hour
+            provider_lambda_q16_per_hour
         );
         Ok(())
     }
