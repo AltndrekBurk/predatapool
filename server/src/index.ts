@@ -89,16 +89,15 @@ function assertPublicPoolEligible(input: {
 function validateEnv(): void {
   if (process.env.NODE_ENV === "test") return;
   if (!process.env.SERVER_BASE_URL) {
-    console.warn(
-      "[server] SERVER_BASE_URL not set — on-chain storage_uri will point at " +
-        "localhost. Set it before running outside dev."
+    throw new Error(
+      "[server] SERVER_BASE_URL not set — on-chain storage_uri would point at " +
+        "localhost. Set it before booting outside dev."
     );
   }
   if (!process.env.PHOTON_RPC_URL) {
-    console.warn(
-      "[server] PHOTON_RPC_URL not set — settle_receipt will fail at runtime " +
-        "(Light Protocol requires Photon). Set a Helius/Photon endpoint to " +
-        "settle compressed BuyerSlot leaves."
+    throw new Error(
+      "[server] PHOTON_RPC_URL not set — settle_receipt would fail at runtime " +
+        "(Light Protocol requires Photon). Set a Helius/Photon endpoint."
     );
   }
 }
