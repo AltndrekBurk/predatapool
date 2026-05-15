@@ -56,21 +56,3 @@ export function isReceiptFresh(
   return isReceiptFreshSdk(toSdkReceipt(r), nowSec);
 }
 
-export function deserializeReceipt(bytes: Uint8Array): JoinReceipt {
-  if (bytes.length !== RECEIPT_BYTES) {
-    throw new Error(`expected ${RECEIPT_BYTES} bytes, got ${bytes.length}`);
-  }
-  const decoder = new TextDecoder();
-  const domain = decoder.decode(bytes.slice(0, RECEIPT_DOMAIN_LEN));
-  if (domain !== RECEIPT_DOMAIN) {
-    throw new Error(`domain mismatch: ${domain}`);
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return {
-    poolHash: bytes.slice(16, 48),
-    buyer: new PublicKey(bytes.slice(48, 80)),
-    maxPrice: view.getBigUint64(80, true),
-    nonce: view.getBigUint64(88, true),
-    deadline: view.getBigInt64(96, true),
-  };
-}

@@ -153,10 +153,6 @@ export function markFetched(hashHex: string, dataHash: string): void {
   store.recordFetched(hashHex, dataHash, fetchedAt, expiresAt);
 }
 
-export function setStatus(hashHex: string, status: PoolStatus): void {
-  getStore().setStatus(hashHex, status);
-}
-
 export function getPool(hashHex: string): PoolRecord | undefined {
   return getStore().getPool(hashHex);
 }

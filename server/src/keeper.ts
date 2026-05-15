@@ -23,7 +23,6 @@ import {
   type KeyPairSigner,
 } from "@solana/kit";
 import { readFileSync } from "fs";
-import { createHash } from "crypto";
 import { createRequire } from "node:module";
 import type { PendingReceipt } from "./batch.js";
 import { prepareSettleReceiptCpi, prepareClaimRebateCpi } from "./light.js";
@@ -436,15 +435,6 @@ export async function registerDatasetOnChain(
       `merkle_root: ${envelope.merkleRoot.toString("hex").slice(0, 16)}...`
   );
   return tx;
-}
-
-/**
- * Hash data payload to a hex string (for on-chain registration).
- */
-export function hashDataPayload(data: unknown): string {
-  return createHash("sha256")
-    .update(JSON.stringify(data))
-    .digest("hex");
 }
 
 const USDC_MINT = new PublicKey(
