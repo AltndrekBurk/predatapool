@@ -12,7 +12,9 @@ mod tests {
     const LAMBDA_0667: u32 = 4370; // ≈ 0.0667/hr (was 667 bps/hr)
     const LAMBDA_002: u32 = 1311; // ≈ 0.02/hr (was 200 bps/hr)
 
-    fn make_pool(base: u64, lambda_q16: u32, fetched_at: i64) -> DataPool {
+    fn make_pool(base: u64, lambda_q16: u32, fetched_at_secs: i64) -> DataPool {
+        // Tests express `fetched_at_secs` in unix seconds for readability;
+        // the state now stores ms, so the helper converts at the boundary.
         DataPool {
             request_hash: [0u8; 32],
             keeper: Default::default(),
@@ -23,7 +25,7 @@ mod tests {
             buyer_count: 0,
             total_collected: 0,
             total_distributed: 0,
-            fetched_at,
+            fetched_at_ms: fetched_at_secs.saturating_mul(1000),
             data_hash: [0u8; 32],
             lambda_q16_per_hour: lambda_q16,
             provider: Default::default(),
@@ -44,7 +46,7 @@ mod tests {
     fn make_pool_with_provider(
         base: u64,
         lambda_q16: u32,
-        fetched_at: i64,
+        fetched_at_secs: i64,
         total_collected: u64,
         buyer_count: u32,
         provider_share_bps: u16,
@@ -60,7 +62,7 @@ mod tests {
             buyer_count,
             total_collected,
             total_distributed: 0,
-            fetched_at,
+            fetched_at_ms: fetched_at_secs.saturating_mul(1000),
             data_hash: [0u8; 32],
             lambda_q16_per_hour: lambda_q16,
             provider: Default::default(),

@@ -10,7 +10,7 @@ pub struct TriggerFetch<'info> {
         mut,
         seeds = [b"data_pool", request_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.fetched_at == 0 @ DataPoolError::AlreadyFetched,
+        constraint = pool.fetched_at_ms == 0 @ DataPoolError::AlreadyFetched,
         constraint = pool.keeper == keeper.key() @ DataPoolError::UnauthorizedFetch,
     )]
     pub pool: Account<'info, DataPool>,
@@ -26,20 +26,14 @@ pub fn handle_trigger_fetch(
 ) -> Result<()> {
     let pool = &mut ctx.accounts.pool;
 
-    // Threshold enforcement lives off-chain in the matcher (server/src/matcher.ts
-    // `shouldTriggerFetch`). The keeper-only constraint above is the security
-    // boundary; the redundant on-chain count would create a chicken-and-egg
-    // problem because `buyer_count` is bumped only by `settle_receipt`, which
-    // buyers can only sign AFTER trigger_fetch records `data_hash`.
-
-    let now = Clock::get()?.unix_timestamp;
-    pool.fetched_at = now;
+    let now_secs = Clock::get()?.unix_timestamp;
+    pool.fetched_at_ms = now_secs.saturating_mul(1000);
     pool.data_hash = data_hash;
 
     msg!(
-        "Pool {} fetched at {}. Data hash: {:?}",
+        "Pool {} fetched at {} ms. Data hash: {:?}",
         pool.key(),
-        now,    
+        pool.fetched_at_ms,
         data_hash
     );
 

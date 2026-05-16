@@ -40,8 +40,9 @@ pub struct DataPool {
     /// Total USDC distributed as rebates (invariant: distributed <= collected)
     pub total_distributed: u64,
 
-    /// Timestamp when the data was fetched (0 = not yet fetched)
-    pub fetched_at: i64,
+    /// Unix-millisecond timestamp when the data was fetched (0 = not yet
+    /// fetched). Stored in ms so it shares units with `expires_at_ms`.
+    pub fetched_at_ms: i64,
 
     /// SHA-256 hash of the fetched data payload (set after fetch)
     pub data_hash: [u8; 32],
@@ -117,12 +118,13 @@ impl DataPool {
     /// Calculate current price using exponential AoI decay.
     ///   price(t) = base * exp(-λ · Δhours)
     /// Floors at 1 micro-USDC. Pre-fetch returns base.
-    pub fn current_price(&self, now: i64) -> u64 {
-        if self.fetched_at == 0 {
+    pub fn current_price(&self, now_secs: i64) -> u64 {
+        if self.fetched_at_ms == 0 {
             return self.base_price_usdc;
         }
-        let dt_secs = (now - self.fetched_at).max(0) as u64;
-        let x_q = lambda_dt_to_xq(self.lambda_q16_per_hour, dt_secs);
+        let now_ms = now_secs.saturating_mul(1000);
+        let dt_ms = (now_ms - self.fetched_at_ms).max(0) as u64;
+        let x_q = lambda_dt_to_xq(self.lambda_q16_per_hour, dt_ms);
         let exp_q = exp_neg_q16(x_q);
         let price = (self.base_price_usdc as u128)
             .saturating_mul(exp_q as u128)
@@ -133,12 +135,13 @@ impl DataPool {
     /// Provider's currently-effective share of post-fetch revenue, in bps.
     /// Same exponential decay as `current_price`; floors at 0 (not 1) since
     /// share is a percentage, not a price.
-    pub fn provider_share_bps_now(&self, now: i64) -> u64 {
-        if self.fetched_at == 0 {
+    pub fn provider_share_bps_now(&self, now_secs: i64) -> u64 {
+        if self.fetched_at_ms == 0 {
             return self.provider_share_bps as u64;
         }
-        let dt_secs = (now - self.fetched_at).max(0) as u64;
-        let x_q = lambda_dt_to_xq(self.provider_lambda_q16_per_hour, dt_secs);
+        let now_ms = now_secs.saturating_mul(1000);
+        let dt_ms = (now_ms - self.fetched_at_ms).max(0) as u64;
+        let x_q = lambda_dt_to_xq(self.provider_lambda_q16_per_hour, dt_ms);
         let exp_q = exp_neg_q16(x_q);
         ((self.provider_share_bps as u128) * (exp_q as u128) / Q as u128) as u64
     }
@@ -161,13 +164,14 @@ pub const LN2_Q: u64 = 45_426;
 /// exp(-x) ≈ 0 for x ≥ 21; cap saves loop iterations and overflow risk.
 pub const X_MAX_Q: u64 = 21 * Q;
 
-/// Convert (λ stored as Q16.16 per-hour, Δseconds) into x = λ·Δhours in Q16.16.
-/// Saturates at `X_MAX_Q` so callers don't have to worry about overflow.
+/// Convert (λ stored as Q16.16 per-hour, Δmilliseconds) into x = λ·Δhours
+/// in Q16.16. Saturates at `X_MAX_Q` so callers don't have to worry about
+/// overflow.
 #[inline]
-fn lambda_dt_to_xq(lambda_q_per_hour: u32, dt_secs: u64) -> u64 {
-    // x_q = (λ_q * dt_secs / 3600) in Q16.16. Use u128 to avoid overflow:
-    // worst case λ_q = u32::MAX ≈ 4.3e9, dt_secs = u64 — product fits u128.
-    let raw = (lambda_q_per_hour as u128).saturating_mul(dt_secs as u128) / 3600u128;
+fn lambda_dt_to_xq(lambda_q_per_hour: u32, dt_ms: u64) -> u64 {
+    // x_q = (λ_q * dt_ms / 3_600_000) in Q16.16. u128 absorbs the product:
+    // worst case λ_q = u32::MAX ≈ 4.3e9, dt_ms = u64 — fits u128.
+    let raw = (lambda_q_per_hour as u128).saturating_mul(dt_ms as u128) / 3_600_000u128;
     if raw >= X_MAX_Q as u128 {
         X_MAX_Q
     } else {

@@ -20,7 +20,7 @@ pub struct ClaimProviderRevenue<'info> {
         mut,
         seeds = [b"data_pool", request_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.fetched_at != 0 @ DataPoolError::NotFetchedYet,
+        constraint = pool.fetched_at_ms != 0 @ DataPoolError::NotFetchedYet,
         constraint = pool.provider == provider.key() @ DataPoolError::UnauthorizedClaim,
     )]
     pub pool: Account<'info, DataPool>,

@@ -14,7 +14,7 @@ pub struct RegisterDataset<'info> {
         mut,
         seeds = [b"data_pool", request_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.fetched_at != 0 @ DataPoolError::NotFetchedYet,
+        constraint = pool.fetched_at_ms != 0 @ DataPoolError::NotFetchedYet,
         constraint = pool.keeper == keeper.key() @ DataPoolError::UnauthorizedFetch,
     )]
     pub pool: Account<'info, DataPool>,
@@ -55,10 +55,10 @@ pub fn handle_register_dataset(
     pool.keeper_signature = keeper_signature;
 
     msg!(
-        "Dataset registered for pool {}. storage_uri: {}. fetched_at: {}.",
+        "Dataset registered for pool {}. storage_uri: {}. fetched_at_ms: {}.",
         pool.key(),
         pool.storage_uri,
-        pool.fetched_at
+        pool.fetched_at_ms
     );
 
     Ok(())

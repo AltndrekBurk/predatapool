@@ -67,7 +67,7 @@ pub mod datapool {
         pool.buyer_count = 0;
         pool.total_collected = 0;
         pool.total_distributed = 0;
-        pool.fetched_at = 0;
+        pool.fetched_at_ms = 0;
         pool.data_hash = [0u8; 32];
         pool.lambda_q16_per_hour = lambda_q16_per_hour;
         pool.provider = provider;

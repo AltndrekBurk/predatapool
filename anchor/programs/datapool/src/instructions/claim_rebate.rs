@@ -36,7 +36,7 @@ pub struct ClaimRebate<'info> {
         mut,
         seeds = [b"data_pool", request_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.fetched_at != 0 @ DataPoolError::NotFetchedYet,
+        constraint = pool.fetched_at_ms != 0 @ DataPoolError::NotFetchedYet,
     )]
     pub pool: Account<'info, DataPool>,
 
