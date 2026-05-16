@@ -47,7 +47,7 @@ mod tests {
         lambda_q16: u32,
         fetched_at: i64,
         total_collected: u64,
-        buyer_count: u8,
+        buyer_count: u32,
         provider_share_bps: u16,
         provider_lambda_q16: u32,
     ) -> DataPool {

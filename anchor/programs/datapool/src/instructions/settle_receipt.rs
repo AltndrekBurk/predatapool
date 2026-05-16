@@ -141,7 +141,8 @@ pub fn handle_settle_receipt<'info>(
     // timing. Decouples sponsor classification from the off-chain ordering
     // of settle_receipt vs trigger_fetch — server can call trigger_fetch
     // first and the early receipts still get is_sponsor=true.
-    let is_sponsor = ctx.accounts.pool.buyer_count < ctx.accounts.pool.min_buyers;
+    let is_sponsor =
+        ctx.accounts.pool.buyer_count < (ctx.accounts.pool.min_buyers as u32);
 
     let price = ctx.accounts.pool.current_price(now);
     require!(

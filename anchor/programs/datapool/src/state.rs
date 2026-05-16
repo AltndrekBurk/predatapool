@@ -30,8 +30,9 @@ pub struct DataPool {
     /// Minimum number of buyers before fetch can be triggered
     pub min_buyers: u8,
 
-    /// Current number of buyers who have joined
-    pub buyer_count: u8,
+    /// Number of receipts settled on-chain for this pool. u32 instead of u8
+    /// so high-volume pools (>255 buyers) don't silently saturate.
+    pub buyer_count: u32,
 
     /// Total USDC collected in escrow
     pub total_collected: u64,
