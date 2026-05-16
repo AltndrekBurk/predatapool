@@ -101,6 +101,7 @@ pub struct SettleReceipt<'info> {
     #[account(address = INSTRUCTIONS_SYSVAR_ID)]
     pub instructions_sysvar: UncheckedAccount<'info>,
 
+    #[account(address = pool.usdc_mint)]
     pub usdc_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,

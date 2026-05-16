@@ -45,7 +45,11 @@ pub struct ClaimRebate<'info> {
     pub escrow_token_account: Account<'info, TokenAccount>,
 
     /// Sponsor's USDC token account — receives rebate.
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint = pool.usdc_mint,
+        token::authority = buyer,
+    )]
     pub sponsor_token_account: Account<'info, TokenAccount>,
 
     #[account(mut)]

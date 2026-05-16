@@ -33,7 +33,11 @@ pub struct ClaimProviderRevenue<'info> {
     pub escrow_token_account: Account<'info, TokenAccount>,
 
     /// Provider's USDC token account — receives revenue.
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint = pool.usdc_mint,
+        token::authority = provider,
+    )]
     pub provider_token_account: Account<'info, TokenAccount>,
 
     #[account(mut)]
