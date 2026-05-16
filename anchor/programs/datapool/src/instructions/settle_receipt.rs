@@ -62,7 +62,6 @@ pub struct SettleReceipt<'info> {
         mut,
         seeds = [b"data_pool", receipt.pool_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.is_open @ DataPoolError::PoolClosed,
     )]
     pub pool: Account<'info, DataPool>,
 

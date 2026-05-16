@@ -70,7 +70,6 @@ pub mod datapool {
         pool.fetched_at = 0;
         pool.data_hash = [0u8; 32];
         pool.lambda_q16_per_hour = lambda_q16_per_hour;
-        pool.is_open = true;
         pool.provider = provider;
         pool.provider_share_bps = provider_share_bps;
         pool.provider_lambda_q16_per_hour = provider_lambda_q16_per_hour;

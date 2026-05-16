@@ -51,9 +51,6 @@ pub struct DataPool {
     /// Example: 656 ≈ 0.01/hr ≈ -1%/hr near t=0 (matches the old 100 bps/hr).
     pub lambda_q16_per_hour: u32,
 
-    /// Whether the pool is accepting new buyers
-    pub is_open: bool,
-
     /// Data provider's wallet — data rights holder.
     /// Receives a time-decayed share of post-fetch revenue per their agreement.
     pub provider: Pubkey,

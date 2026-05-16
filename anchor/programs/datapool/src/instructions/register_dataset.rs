@@ -54,9 +54,6 @@ pub fn handle_register_dataset(
     pool.merkle_root = merkle_root;
     pool.keeper_signature = keeper_signature;
 
-    // Re-open pool for post-fetch buyers at decayed price.
-    pool.is_open = true;
-
     msg!(
         "Dataset registered for pool {}. storage_uri: {}. fetched_at: {}.",
         pool.key(),

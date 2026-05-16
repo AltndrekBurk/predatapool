@@ -2,8 +2,6 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum DataPoolError {
-    #[msg("Pool is already closed for new members")]
-    PoolClosed,
     #[msg("Pool has already been fetched")]
     AlreadyFetched,
     #[msg("Insufficient payment amount")]
