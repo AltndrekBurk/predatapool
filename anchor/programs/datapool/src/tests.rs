@@ -465,4 +465,43 @@ mod tests {
         let entitlement = (post_fetch_revenue as u128 * 6000 / 10000) as u64;
         assert_eq!(entitlement, 0);
     }
+
+    // ── Sponsor classification: first min_buyers receipts are sponsors ─────
+    // Mirror of the settle_receipt rule: is_sponsor = buyer_count < min_buyers.
+    // Decoupled from fetched_at so trigger_fetch order doesn't matter.
+
+    fn is_sponsor_at_settle(buyer_count_before: u8, min_buyers: u8) -> bool {
+        buyer_count_before < min_buyers
+    }
+
+    #[test]
+    fn test_sponsor_flag_set_for_first_min_buyers_receipts() {
+        let min_buyers = 3u8;
+        assert!(is_sponsor_at_settle(0, min_buyers));
+        assert!(is_sponsor_at_settle(1, min_buyers));
+        assert!(is_sponsor_at_settle(2, min_buyers));
+        assert!(!is_sponsor_at_settle(3, min_buyers));
+        assert!(!is_sponsor_at_settle(4, min_buyers));
+    }
+
+    #[test]
+    fn test_sponsor_flag_independent_of_fetched_at() {
+        // The new rule does not look at pool.fetched_at, so trigger_fetch
+        // before/after settle does not flip the flag.
+        let min_buyers = 2u8;
+        // pre-fetch settle (buyer_count=0): sponsor
+        assert!(is_sponsor_at_settle(0, min_buyers));
+        // post-fetch settle (still first arrival, buyer_count=1): sponsor
+        assert!(is_sponsor_at_settle(1, min_buyers));
+        // post-fetch settle (buyer_count=2, threshold reached): NOT sponsor
+        assert!(!is_sponsor_at_settle(2, min_buyers));
+    }
+
+    #[test]
+    fn test_sponsor_flag_zero_min_buyers_means_no_sponsors() {
+        // Degenerate case: min_buyers=0 → no receipt is ever a sponsor.
+        // claim_rebate would fail at require!(is_sponsor, …).
+        assert!(!is_sponsor_at_settle(0, 0));
+        assert!(!is_sponsor_at_settle(5, 0));
+    }
 }

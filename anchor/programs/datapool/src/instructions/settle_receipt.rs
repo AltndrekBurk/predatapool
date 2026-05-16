@@ -137,7 +137,11 @@ pub fn handle_settle_receipt<'info>(
     verify_ed25519_authorization(&ctx.accounts.instructions_sysvar, &receipt)?;
 
     let pool_key = ctx.accounts.pool.key();
-    let is_sponsor = ctx.accounts.pool.fetched_at == 0;
+    // First `min_buyers` settlers are sponsors regardless of trigger_fetch
+    // timing. Decouples sponsor classification from the off-chain ordering
+    // of settle_receipt vs trigger_fetch — server can call trigger_fetch
+    // first and the early receipts still get is_sponsor=true.
+    let is_sponsor = ctx.accounts.pool.buyer_count < ctx.accounts.pool.min_buyers;
 
     let price = ctx.accounts.pool.current_price(now);
     require!(
