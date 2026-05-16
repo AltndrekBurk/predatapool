@@ -90,7 +90,7 @@ pub fn handle_claim_rebate<'info>(
     // state-tree root referenced by slot_meta.tree_info.
     let mut light_slot =
         LightAccount::<CompressedBuyerSlot>::new_mut(&crate::ID, &slot_meta, slot_data.clone())
-            .map_err(|_| error!(DataPoolError::Overflow))?;
+            .map_err(|_| error!(DataPoolError::LightCpiSetup))?;
 
     let pool = &ctx.accounts.pool;
 
@@ -162,9 +162,9 @@ pub fn handle_claim_rebate<'info>(
 
     LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
         .with_light_account(light_slot)
-        .map_err(|_| error!(DataPoolError::Overflow))?
+        .map_err(|_| error!(DataPoolError::LightCpiSetup))?
         .invoke(light_cpi_accounts)
-        .map_err(|_| error!(DataPoolError::Overflow))?;
+        .map_err(|_| error!(DataPoolError::LightCpiInvoke))?;
 
     msg!(
         "Rebate claimed: {} USDC micro-units to sponsor {}",

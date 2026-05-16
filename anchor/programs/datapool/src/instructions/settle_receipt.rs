@@ -183,7 +183,7 @@ pub fn handle_settle_receipt<'info>(
         ],
         &address_tree_info
             .get_tree_pubkey(&light_cpi_accounts)
-            .map_err(|_| error!(DataPoolError::Overflow))?,
+            .map_err(|_| error!(DataPoolError::LightCpiSetup))?,
         &crate::ID,
     );
     let new_address_params = address_tree_info.into_new_address_params_packed(address_seed);
@@ -204,10 +204,10 @@ pub fn handle_settle_receipt<'info>(
 
     LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
         .with_light_account(compressed_slot)
-        .map_err(|_| error!(DataPoolError::Overflow))?
+        .map_err(|_| error!(DataPoolError::LightCpiSetup))?
         .with_new_addresses(&[new_address_params])
         .invoke(light_cpi_accounts)
-        .map_err(|_| error!(DataPoolError::Overflow))?;
+        .map_err(|_| error!(DataPoolError::LightCpiInvoke))?;
 
     // Update pool aggregates after the compressed write so a CPI failure
     // doesn't leak stale buyer counts.

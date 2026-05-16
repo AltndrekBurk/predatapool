@@ -42,4 +42,8 @@ pub enum DataPoolError {
     PoolExpired,
     #[msg("Dataset already registered for this pool")]
     AlreadyRegistered,
+    #[msg("Light Protocol CPI setup failed (account build, address derivation, account meta)")]
+    LightCpiSetup,
+    #[msg("Light Protocol CPI invocation failed (system program rejected the leaf op)")]
+    LightCpiInvoke,
 }
