@@ -62,7 +62,6 @@ pub struct SettleReceipt<'info> {
         mut,
         seeds = [b"data_pool", receipt.pool_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.is_open @ DataPoolError::PoolClosed,
     )]
     pub pool: Account<'info, DataPool>,
 
@@ -102,6 +101,7 @@ pub struct SettleReceipt<'info> {
     #[account(address = INSTRUCTIONS_SYSVAR_ID)]
     pub instructions_sysvar: UncheckedAccount<'info>,
 
+    #[account(address = pool.usdc_mint)]
     pub usdc_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -137,7 +137,12 @@ pub fn handle_settle_receipt<'info>(
     verify_ed25519_authorization(&ctx.accounts.instructions_sysvar, &receipt)?;
 
     let pool_key = ctx.accounts.pool.key();
-    let is_sponsor = ctx.accounts.pool.fetched_at == 0;
+    // First `min_buyers` settlers are sponsors regardless of trigger_fetch
+    // timing. Decouples sponsor classification from the off-chain ordering
+    // of settle_receipt vs trigger_fetch — server can call trigger_fetch
+    // first and the early receipts still get is_sponsor=true.
+    let is_sponsor =
+        ctx.accounts.pool.buyer_count < (ctx.accounts.pool.min_buyers as u32);
 
     let price = ctx.accounts.pool.current_price(now);
     require!(
@@ -178,7 +183,7 @@ pub fn handle_settle_receipt<'info>(
         ],
         &address_tree_info
             .get_tree_pubkey(&light_cpi_accounts)
-            .map_err(|_| error!(DataPoolError::Overflow))?,
+            .map_err(|_| error!(DataPoolError::LightCpiSetup))?,
         &crate::ID,
     );
     let new_address_params = address_tree_info.into_new_address_params_packed(address_seed);
@@ -199,10 +204,10 @@ pub fn handle_settle_receipt<'info>(
 
     LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
         .with_light_account(compressed_slot)
-        .map_err(|_| error!(DataPoolError::Overflow))?
+        .map_err(|_| error!(DataPoolError::LightCpiSetup))?
         .with_new_addresses(&[new_address_params])
         .invoke(light_cpi_accounts)
-        .map_err(|_| error!(DataPoolError::Overflow))?;
+        .map_err(|_| error!(DataPoolError::LightCpiInvoke))?;
 
     // Update pool aggregates after the compressed write so a CPI failure
     // doesn't leak stale buyer counts.

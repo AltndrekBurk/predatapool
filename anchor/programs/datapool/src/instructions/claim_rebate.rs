@@ -36,7 +36,7 @@ pub struct ClaimRebate<'info> {
         mut,
         seeds = [b"data_pool", request_hash.as_ref()],
         bump = pool.bump,
-        constraint = pool.fetched_at != 0 @ DataPoolError::NotFetchedYet,
+        constraint = pool.fetched_at_ms != 0 @ DataPoolError::NotFetchedYet,
     )]
     pub pool: Account<'info, DataPool>,
 
@@ -45,7 +45,11 @@ pub struct ClaimRebate<'info> {
     pub escrow_token_account: Account<'info, TokenAccount>,
 
     /// Sponsor's USDC token account — receives rebate.
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint = pool.usdc_mint,
+        token::authority = buyer,
+    )]
     pub sponsor_token_account: Account<'info, TokenAccount>,
 
     #[account(mut)]
@@ -86,7 +90,7 @@ pub fn handle_claim_rebate<'info>(
     // state-tree root referenced by slot_meta.tree_info.
     let mut light_slot =
         LightAccount::<CompressedBuyerSlot>::new_mut(&crate::ID, &slot_meta, slot_data.clone())
-            .map_err(|_| error!(DataPoolError::Overflow))?;
+            .map_err(|_| error!(DataPoolError::LightCpiSetup))?;
 
     let pool = &ctx.accounts.pool;
 
@@ -158,9 +162,9 @@ pub fn handle_claim_rebate<'info>(
 
     LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
         .with_light_account(light_slot)
-        .map_err(|_| error!(DataPoolError::Overflow))?
+        .map_err(|_| error!(DataPoolError::LightCpiSetup))?
         .invoke(light_cpi_accounts)
-        .map_err(|_| error!(DataPoolError::Overflow))?;
+        .map_err(|_| error!(DataPoolError::LightCpiInvoke))?;
 
     msg!(
         "Rebate claimed: {} USDC micro-units to sponsor {}",

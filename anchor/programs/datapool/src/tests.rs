@@ -12,7 +12,9 @@ mod tests {
     const LAMBDA_0667: u32 = 4370; // ≈ 0.0667/hr (was 667 bps/hr)
     const LAMBDA_002: u32 = 1311; // ≈ 0.02/hr (was 200 bps/hr)
 
-    fn make_pool(base: u64, lambda_q16: u32, fetched_at: i64) -> DataPool {
+    fn make_pool(base: u64, lambda_q16: u32, fetched_at_secs: i64) -> DataPool {
+        // Tests express `fetched_at_secs` in unix seconds for readability;
+        // the state now stores ms, so the helper converts at the boundary.
         DataPool {
             request_hash: [0u8; 32],
             keeper: Default::default(),
@@ -23,10 +25,9 @@ mod tests {
             buyer_count: 0,
             total_collected: 0,
             total_distributed: 0,
-            fetched_at,
+            fetched_at_ms: fetched_at_secs.saturating_mul(1000),
             data_hash: [0u8; 32],
             lambda_q16_per_hour: lambda_q16,
-            is_open: true,
             provider: Default::default(),
             provider_share_bps: 0,
             provider_lambda_q16_per_hour: 0,
@@ -45,9 +46,9 @@ mod tests {
     fn make_pool_with_provider(
         base: u64,
         lambda_q16: u32,
-        fetched_at: i64,
+        fetched_at_secs: i64,
         total_collected: u64,
-        buyer_count: u8,
+        buyer_count: u32,
         provider_share_bps: u16,
         provider_lambda_q16: u32,
     ) -> DataPool {
@@ -61,10 +62,9 @@ mod tests {
             buyer_count,
             total_collected,
             total_distributed: 0,
-            fetched_at,
+            fetched_at_ms: fetched_at_secs.saturating_mul(1000),
             data_hash: [0u8; 32],
             lambda_q16_per_hour: lambda_q16,
-            is_open: true,
             provider: Default::default(),
             provider_share_bps,
             provider_lambda_q16_per_hour: provider_lambda_q16,
@@ -464,5 +464,44 @@ mod tests {
         assert_eq!(post_fetch_revenue, 0);
         let entitlement = (post_fetch_revenue as u128 * 6000 / 10000) as u64;
         assert_eq!(entitlement, 0);
+    }
+
+    // ── Sponsor classification: first min_buyers receipts are sponsors ─────
+    // Mirror of the settle_receipt rule: is_sponsor = buyer_count < min_buyers.
+    // Decoupled from fetched_at so trigger_fetch order doesn't matter.
+
+    fn is_sponsor_at_settle(buyer_count_before: u8, min_buyers: u8) -> bool {
+        buyer_count_before < min_buyers
+    }
+
+    #[test]
+    fn test_sponsor_flag_set_for_first_min_buyers_receipts() {
+        let min_buyers = 3u8;
+        assert!(is_sponsor_at_settle(0, min_buyers));
+        assert!(is_sponsor_at_settle(1, min_buyers));
+        assert!(is_sponsor_at_settle(2, min_buyers));
+        assert!(!is_sponsor_at_settle(3, min_buyers));
+        assert!(!is_sponsor_at_settle(4, min_buyers));
+    }
+
+    #[test]
+    fn test_sponsor_flag_independent_of_fetched_at() {
+        // The new rule does not look at pool.fetched_at, so trigger_fetch
+        // before/after settle does not flip the flag.
+        let min_buyers = 2u8;
+        // pre-fetch settle (buyer_count=0): sponsor
+        assert!(is_sponsor_at_settle(0, min_buyers));
+        // post-fetch settle (still first arrival, buyer_count=1): sponsor
+        assert!(is_sponsor_at_settle(1, min_buyers));
+        // post-fetch settle (buyer_count=2, threshold reached): NOT sponsor
+        assert!(!is_sponsor_at_settle(2, min_buyers));
+    }
+
+    #[test]
+    fn test_sponsor_flag_zero_min_buyers_means_no_sponsors() {
+        // Degenerate case: min_buyers=0 → no receipt is ever a sponsor.
+        // claim_rebate would fail at require!(is_sponsor, …).
+        assert!(!is_sponsor_at_settle(0, 0));
+        assert!(!is_sponsor_at_settle(5, 0));
     }
 }

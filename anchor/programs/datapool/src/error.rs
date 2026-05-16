@@ -2,8 +2,6 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum DataPoolError {
-    #[msg("Pool is already closed for new members")]
-    PoolClosed,
     #[msg("Pool has already been fetched")]
     AlreadyFetched,
     #[msg("Insufficient payment amount")]
@@ -44,4 +42,8 @@ pub enum DataPoolError {
     PoolExpired,
     #[msg("Dataset already registered for this pool")]
     AlreadyRegistered,
+    #[msg("Light Protocol CPI setup failed (account build, address derivation, account meta)")]
+    LightCpiSetup,
+    #[msg("Light Protocol CPI invocation failed (system program rejected the leaf op)")]
+    LightCpiInvoke,
 }
